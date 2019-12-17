@@ -1,4 +1,3 @@
-use crate::err::Error;
 use crate::timeout::*;
 use bytes::BytesMut;
 use futures::{future::ok, future::Future, prelude::*, stream};
@@ -95,7 +94,7 @@ where
         Ok(s3_upload_file(
             s3.clone(),
             bucket.clone(),
-            path.clone(),
+            path,
             key,
             n_retries,
             state,
