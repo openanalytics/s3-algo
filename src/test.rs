@@ -3,7 +3,6 @@ use crate::{timeout::Timeout, *};
 use multi_default_trait_impl::{default_trait_impl, trait_impl};
 use rand::Rng;
 use rusoto_core::*;
-use rusoto_s3::*;
 use std::{
     io::Read,
     path::Path,
@@ -11,6 +10,32 @@ use std::{
     time::{Duration, Instant},
 };
 use tempdir::TempDir;
+
+/// Timeout implementation used for testing
+struct TimeoutState;
+impl Timeout for TimeoutState {
+    fn get_timeout(&self, _bytes: u64, _attempts: usize) -> Duration {
+        Duration::from_secs(4)
+    }
+    fn update(&mut self, _: &UploadFileResult) {}
+    fn get_estimate(&self) -> f64 {
+        0.0
+    }
+}
+macro_rules! all_file_paths {
+    ($dir_path:expr $(, max_open = $max_open:expr)?) => {
+        walkdir::WalkDir::new(&$dir_path)
+            $(.max_open($max_open))?
+            .into_iter()
+            .filter_map(|entry|
+                entry.ok().and_then(|entry| {
+                    if entry.file_type().is_file() {
+                        Some(entry.path().to_owned())
+                    } else {
+                        None
+                    }
+                }))};
+}
 
 fn rand_string(n: usize) -> String {
     rand::thread_rng()
@@ -20,17 +45,41 @@ fn rand_string(n: usize) -> String {
 }
 
 #[test]
-fn s3_upload_file_attempts_count() {
-    struct TimeoutState;
-    impl Timeout for TimeoutState {
-        fn get_timeout(&self, _bytes: u64, _attempts: usize) -> Duration {
-            Duration::from_secs(4)
-        }
-        fn update(&mut self, _: &UploadFileResult) {}
-        fn get_estimate(&self) -> f64 {
-            0.0
-        }
+fn s3_upload_files_seq_count() {
+    const N_FILES: usize = 100;
+    let tmp_dir = TempDir::new("s3-testing").unwrap();
+    let folder = tmp_dir.path().join("folder");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    for i in 0..N_FILES {
+        let path = folder.join(format!("file_{}", i));
+        std::fs::write(&path, "hello".as_bytes()).unwrap();
     }
+
+    let cli = S3MockRetry::new(2);
+
+    let counter = Mutex::new(0);
+    let future = s3_upload_files(
+        cli,
+        "any-bucket".into(),
+        all_file_paths!(folder),
+        |_| "any key really".into(),
+        UploadConfig::default(),
+        move |res| {
+            let mut counter = counter.lock().unwrap();
+            assert_eq!(*counter, res.seq);
+            *counter += 1;
+            Ok(())
+        },
+        PutObjectRequest::default,
+    );
+
+    let mut runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(future).unwrap();
+}
+
+#[test]
+fn s3_upload_file_attempts_count() {
     let timeout = Arc::new(Mutex::new(TimeoutState));
 
     const ATTEMPTS: usize = 4;
@@ -92,7 +141,7 @@ fn test_s3_upload_files() {
         all_file_paths!(dir),
         strip_prefix(tmp_dir.path().to_owned()),
         cfg,
-        |_, _res| Ok(()),
+        |_res| Ok(()),
         PutObjectRequest::default,
     );
 

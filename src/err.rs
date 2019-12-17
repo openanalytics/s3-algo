@@ -1,5 +1,5 @@
 use snafu::{Backtrace, Snafu};
-use std::{io, path::PathBuf};
+use std::io;
 type PutError = rusoto_core::RusotoError<rusoto_s3::PutObjectError>;
 
 #[derive(Snafu, Debug)]

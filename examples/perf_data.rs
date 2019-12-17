@@ -78,7 +78,7 @@ fn benchmark_s3_upload(
     };
 
     upload_perf_log_init(&mut std::io::stdout());
-    let progress = |_progress, res: UploadFileResult| {
+    let progress = |res: UploadFileResult| {
         upload_perf_log_update(&mut std::io::stdout(), res);
         Ok(())
     };

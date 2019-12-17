@@ -48,12 +48,11 @@ pub fn strip_prefix<P: AsRef<Path>>(prefix: P) -> impl Fn(&Path) -> PathBuf {
 }
 
 /// Upload multiple files to S3.
-/// Use `s3_upload file` for each file, and additionally provides counting of uploaded files and
-/// bytes through the `progress` parameter.
 ///
 /// `path_to_key` is a function that converts a file path to the key it should have in S3.
 /// The provided `strip_prefix` function should cover most use cases.
 ///
+/// `s3_upload_files` provides counting of uploaded files and bytes through the `progress` closure:
 /// `progress` will be called after the upload of each file, with some data about that upload.
 /// The first `usize` parameter is the number of this file in the upload, while [`UploadFileResult`](struct.UploadFileResult.html)
 /// holds more data such as size in bytes, and the duration of the upload. It is thus possible to
@@ -74,7 +73,7 @@ pub fn s3_upload_files<P, F, C, I, T, R>(
     default_request: R,
 ) -> impl Future<Item = (), Error = Error>
 where
-    P: Fn(usize, UploadFileResult) -> F,
+    P: Fn(UploadFileResult) -> F,
     F: IntoFuture<Item = (), Error = Error>,
     C: S3 + Clone + Send,
     I: Iterator<Item = PathBuf>,
@@ -117,8 +116,9 @@ where
             )
             .buffer_unordered(copy_parallelization)
             .zip(stream::iter_ok(0..))
-            .and_then(move |(result, i)| {
-                progress(i, result)
+            .and_then(move |(mut result, i)| {
+                result.seq = i;
+                progress(result)
             })
             .for_each(|()| {
                 Ok(())
@@ -133,10 +133,18 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct UploadFileResult {
+    /// The number of this file (how many files were already uploaded)
+    pub seq: usize,
+    /// Size in bytes of uploaded file
     pub bytes: u64,
+    /// The total time it took to upload the file including all retries
     pub total_time: Duration,
+    /// The time it took to upload the file looking at the successful request only
     pub success_time: Duration,
+    /// Number of attempts. A value of `1` means no retries - success on first attempt.
     pub attempts: usize,
+    /// Estimated bytes/ms upload speed at the initiation of the upload of this file. Useful for
+    /// debugging the upload algorithm and not much more
     pub est: f64,
 }
 
@@ -223,6 +231,7 @@ where
         move |((((est, bytes), success_time), attempts), total_time)| {
             // Results from this upload are in - update the timeout state
             let res = UploadFileResult {
+                seq: 0, // will be set by the caller (s3_upload_files)!
                 bytes,
                 total_time,
                 success_time,
