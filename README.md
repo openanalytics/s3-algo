@@ -6,7 +6,7 @@ An algorithm for uploading multiple files to S3, on top of [rusoto](https://gith
 * As generic as possible, to support many use cases.
 * It is possible to collect detailed data from the upload through a closure - one can choose to use this data to analyze performance, or for example to implement a live progress percentage report.
 * Backoff mechanism
-* Fast. Several mechanisms are in place, such as [aggressive timeouts](https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html), parallelization using tokio threadpools, and streaming files from file system while uploading.
+* Fast. Several mechanisms are in place, such as [aggressive timeouts](https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html), parallelization and streaming files from file system while uploading.
 
 ## Yet to do
 * Is the algorithm considerate with respect to other processes that want to use the same network interface/link? For example in the case of congestion. It does implement increasing back-off intervals after failed requests, but the real effect on a shared network should be tested.
