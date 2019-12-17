@@ -1,7 +1,7 @@
 # `s3-upload`
 An algorithm for uploading multiple files to S3, on top of [rusoto](https://github.com/rusoto/rusoto).
 
-## Features of the `s3_upload_file` function
+## Features of the `s3_upload_files` function
 * async
 * As generic as possible, to support many use cases.
 * It is possible to collect detailed data from the upload through a closure - one can choose to use this data to analyze performance, or for example to implement a live progress percentage report.
