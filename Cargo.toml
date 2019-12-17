@@ -1,7 +1,7 @@
 [package]
 name = "s3-upload"
 description = "Algorithm for uploading multiple files to AWS"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Erlend Langseth <3rlendhl@gmail.com>"]
 license = "MIT"
 edition = "2018"
