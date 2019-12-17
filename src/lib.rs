@@ -6,6 +6,7 @@ use futures_retry::{FutureRetry, RetryPolicy};
 use futures_stopwatch::Stopwatch;
 use rusoto_core::ByteStream;
 use rusoto_s3::*;
+use snafu::futures01::FutureExt;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -110,7 +111,8 @@ where
         stream::iter_result(jobs)
             .and_then(move |x| {
                 Delay::new(Instant::now() + Duration::from_secs(extra_copy_file_time_s))
-                    .map(move |_| x).map_err(|e| Error::Delay (e))
+                    .map(move |_| x)
+                    .context(err::Delay)
                 }
             )
             .buffer_unordered(copy_parallelization)
@@ -123,7 +125,8 @@ where
             })
             .and_then(move |x| {
                 Delay::new(Instant::now() + Duration::from_secs(extra_copy_time_s))
-                    .map(move |_| x).map_err(|e| Error::Delay (e))
+                    .map(move |_| x)
+                    .context(err::Delay)
                 }
             ))
 }
@@ -180,10 +183,9 @@ where
                                 len,
                             ))
                         })
-                        .map_err({
+                        .with_context({
                             let path = path.clone();
-                            move |source| Error::Io {
-                                source: source,
+                            move || err::Io {
                                 description: format!("{}", path.display()),
                             }
                         })
@@ -200,7 +202,7 @@ where
                                 ..default_request()
                             })
                             .with_timeout(timeout_value)
-                            .map_err(move |e| Error::PutObject { source: e, key })
+                            .with_context(move || err::PutObject { key })
                             .map(move |_| (est, len))
                         }),
                 )
