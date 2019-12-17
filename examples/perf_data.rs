@@ -1,9 +1,9 @@
+use clap::*;
 use s3_upload::*;
 use std::{
     io::Write,
-    path::{Path, PathBuf}
+    path::{Path, PathBuf},
 };
-use clap::*;
 
 macro_rules! all_file_paths {
     ($dir_path:expr $(, max_open = $max_open:expr)?) => {
@@ -23,9 +23,21 @@ macro_rules! all_file_paths {
 fn main() {
     let mut app = App::new("Example 'perf_data'")
         .before_help("Upload a directory to S3 on localhost.")
-        .arg(Arg::with_name("source").help("Path to a folder to upload to S3").required(true))
-        .arg(Arg::with_name("dest_bucket").help("Destination bucket").required(true))
-        .arg(Arg::with_name("dest_prefix").help("Destination prefix").required(true))
+        .arg(
+            Arg::with_name("source")
+                .help("Path to a folder to upload to S3")
+                .required(true),
+        )
+        .arg(
+            Arg::with_name("dest_bucket")
+                .help("Destination bucket")
+                .required(true),
+        )
+        .arg(
+            Arg::with_name("dest_prefix")
+                .help("Destination prefix")
+                .required(true),
+        )
         .arg(
             Arg::with_name("parallelization")
                 .short("n")
@@ -34,9 +46,11 @@ fn main() {
         );
     let matches = app.clone().get_matches();
 
-    if let (Some(path), Some(bucket), Some(prefix)) =
-        (matches.value_of("source"), matches.value_of("dest_bucket"), matches.value_of("dest_prefix"))
-    {
+    if let (Some(path), Some(bucket), Some(prefix)) = (
+        matches.value_of("source"),
+        matches.value_of("dest_bucket"),
+        matches.value_of("dest_prefix"),
+    ) {
         let parallelization = value_t_or_exit!(matches.value_of("parallelization"), usize);
         benchmark_s3_upload(
             Path::new(path).to_path_buf(),
@@ -73,14 +87,10 @@ fn benchmark_s3_upload(
         s3,
         bucket,
         files_to_upload,
-        move |path| {
-            PathBuf::from(&prefix).join(
-                path.strip_prefix(&dir_path).unwrap()
-            )
-        },
+        move |path| PathBuf::from(&prefix).join(path.strip_prefix(&dir_path).unwrap()),
         cfg,
         progress,
-        Default::default
+        Default::default,
     );
     let mut runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(future).unwrap();

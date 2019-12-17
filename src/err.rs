@@ -1,7 +1,4 @@
-use std::{
-    path::PathBuf,
-    io,
-};
+use std::{io, path::PathBuf};
 type PutError = rusoto_core::RusotoError<rusoto_s3::PutObjectError>;
 
 #[derive(Debug)]
@@ -11,7 +8,7 @@ pub enum Error {
         description: String,
     },
     /// Error originating from tokio::Delay
-    Delay (tokio::timer::Error),
+    Delay(tokio::timer::Error),
     PutObject {
         source: PutError,
         key: String,

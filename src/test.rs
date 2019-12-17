@@ -1,19 +1,16 @@
-use multi_default_trait_impl::{default_trait_impl, trait_impl};
 use crate::testing_s3_client;
-use crate::{
-    *,
-    timeout::Timeout
-};
-use tempdir::TempDir;
-use rusoto_s3::*;
+use crate::{timeout::Timeout, *};
+use multi_default_trait_impl::{default_trait_impl, trait_impl};
+use rand::Rng;
 use rusoto_core::*;
+use rusoto_s3::*;
 use std::{
     io::Read,
     path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use rand::Rng;
+use tempdir::TempDir;
 
 fn rand_string(n: usize) -> String {
     rand::thread_rng()
@@ -38,7 +35,7 @@ fn s3_upload_file_attempts_count() {
 
     const ATTEMPTS: usize = 4;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
-    
+
     let path = tmp_dir.path().join("file.txt");
     std::fs::write(&path, "hello".as_bytes()).unwrap();
 
@@ -51,7 +48,7 @@ fn s3_upload_file_attempts_count() {
         "any-key".into(),
         10,
         timeout,
-        PutObjectRequest::default
+        PutObjectRequest::default,
     );
 
     let mut runtime = tokio::runtime::Runtime::new().unwrap();
@@ -96,7 +93,7 @@ fn test_s3_upload_files() {
         strip_prefix(tmp_dir.path().to_owned()),
         cfg,
         |_, _res| Ok(()),
-        PutObjectRequest::default
+        PutObjectRequest::default,
     );
 
     let mut runtime = tokio::runtime::Runtime::new().unwrap();

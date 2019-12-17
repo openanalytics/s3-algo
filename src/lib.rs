@@ -1,9 +1,11 @@
+use crate::err::Error;
+use crate::timeout::*;
 use bytes::BytesMut;
-use futures::{future::Future, future::ok, prelude::*, stream};
+use futures::{future::ok, future::Future, prelude::*, stream};
 use futures_retry::{FutureRetry, RetryPolicy};
+use futures_stopwatch::Stopwatch;
 use rusoto_core::ByteStream;
 use rusoto_s3::*;
-use futures_stopwatch::Stopwatch;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -13,11 +15,9 @@ use tokio::{
     codec::{BytesCodec, FramedRead},
     timer::Delay,
 };
-use crate::timeout::*;
-use crate::err::Error;
 
-pub mod timeout;
 mod err;
+pub mod timeout;
 pub use err::*;
 mod config;
 pub use config::UploadConfig;
@@ -30,11 +30,10 @@ mod test;
 pub fn testing_s3_client() -> S3Client {
     use rusoto_core::{credential::ProfileProvider, region::Region, HttpClient};
     let client = HttpClient::new().unwrap();
-    let region = 
-        Region::Custom {
-            name: "minio".to_owned(),
-            endpoint: "http://localhost:9000".to_owned(),
-        };
+    let region = Region::Custom {
+        name: "minio".to_owned(),
+        endpoint: "http://localhost:9000".to_owned(),
+    };
 
     let mut profile = ProfileProvider::new().unwrap();
     profile.set_profile("testing");
@@ -42,15 +41,9 @@ pub fn testing_s3_client() -> S3Client {
     rusoto_s3::S3Client::new_with(client, profile, region)
 }
 
-
-
 /// Just for convenience: to provide as `path_to_key` for `s3_upload_files`
 pub fn strip_prefix<P: AsRef<Path>>(prefix: P) -> impl Fn(&Path) -> PathBuf {
-    move |path| {
-        path.strip_prefix(prefix.as_ref())
-            .unwrap()
-            .to_path_buf()
-    }
+    move |path| path.strip_prefix(prefix.as_ref()).unwrap().to_path_buf()
 }
 
 /// Upload multiple files to S3.
@@ -97,8 +90,7 @@ where
     // Make an iterator over jobs - need to make a future which fails if dir_path does not exist
     let jobs = ok(files.map(move |path| {
         let state = timeout_state.clone();
-        let key = path_to_key(path.as_ref())
-            .to_string_lossy().to_string();
+        let key = path_to_key(path.as_ref()).to_string_lossy().to_string();
 
         Ok(s3_upload_file(
             s3.clone(),
@@ -107,7 +99,7 @@ where
             key,
             n_retries,
             state,
-            default_request.clone()
+            default_request.clone(),
         ))
     }));
 
@@ -167,8 +159,13 @@ where
             // Future factory - creates a future that reads file while uploading it
             move |attempts| {
                 // variables captures are owned by this closure, but clones need be sent to further nested closures
-                let (s3, bucket, key, timeout, default_request) =
-                    (s3.clone(), bucket.clone(), key.clone(), timeout1.clone(), default_request.clone());
+                let (s3, bucket, key, timeout, default_request) = (
+                    s3.clone(),
+                    bucket.clone(),
+                    key.clone(),
+                    timeout1.clone(),
+                    default_request.clone(),
+                );
 
                 Stopwatch::new(
                     // Time each retry - we will thus only get the time of the last, successful result (if any)
@@ -235,4 +232,3 @@ where
         },
     )
 }
-
