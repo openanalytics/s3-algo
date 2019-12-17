@@ -6,16 +6,16 @@ An algorithm for uploading multiple files to S3, on top of [rusoto](https://gith
 * As generic as possible, to support many use cases.
 * It is possible to collect detailed data from the upload through a closure - one can choose to use this data to analyze performance, or for example to implement a live progress percentage report.
 * Backoff mechanism
-* Fast. Several mechanisms are in place, such as [aggressive timeouts](https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html), parallelization using tokio threadpools, and streaming files from file system while uploading.
+* Fast. Several mechanisms are in place, such as [aggressive timeouts](https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html), parallelization and streaming files from file system while uploading.
 
-## Yet to do
-* Is the algorithm considerate with respect to other processes that want to use the same network interface/link? For example in the case of congestion. It does implement increasing back-off intervals after failed requests, but the real effect on a shared network should be tested.
+## Yet to consider
+* Is the algorithm considerate with respect to other processes that want to use the same network? For example in the case of congestion. It does implement increasing back-off intervals after failed requests, but the real effect on a shared network should be tested.
 
 ## Algorithm details
 The documentation for `UploadConfig` may help illuminate the components of the algorithm.
 The currnetly most important aspect of the algorithm revolves around deciding timeout values. That is, how long to wait for a request before trying again.
 It is important for performance that the timeout is tight enough.
-The main mechanism to this end is the estimation of the upload bandwidth through a running exponential average of the upload speed (on success) of individual files. 
+The main mechanism to this end is the estimation of the upload bandwidth through a running exponential average of the upload speed (on success) of individual files.
 Additionally, on each successive retry, the timeout increases by some factor (back-off).
 
 
