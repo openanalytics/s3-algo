@@ -61,7 +61,7 @@ pub fn strip_prefix<P: AsRef<Path>>(prefix: P) -> impl Fn(&Path) -> PathBuf {
 /// The provided `strip_prefix` function should cover most use cases.
 ///
 /// `progress` will be called after the upload of each file, with some data about that upload.
-/// The first `usize` parameter is the number of this file in the upload, while [`UploadFileResult`]
+/// The first `usize` parameter is the number of this file in the upload, while [`UploadFileResult`](struct.UploadFileResult.html)
 /// holds more data such as size in bytes, and the duration of the upload. It is thus possible to
 /// report progress both in amount of files, or amount of bytes, depending on what granularity is
 /// desired.

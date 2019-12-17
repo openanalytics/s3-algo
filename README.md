@@ -12,8 +12,12 @@ An algorithm for uploading multiple files to S3, on top of [rusoto](https://gith
 * Is the algorithm considerate with respect to other processes that want to use the same network interface/link? For example in the case of congestion. It does implement increasing back-off intervals after failed requests, but the real effect on a shared network should be tested.
 
 ## Algorithm details
-The documentation for `UploadConfig` serves to illuminate the workings of the algorithm.
-A running exponential average of the upload bandwidth is estimated and used in the calculation of timeout intervals. It is important for performance that the timeout is tight enough.
+The documentation for `UploadConfig` may help illuminate the components of the algorithm.
+The currnetly most important aspect of the algorithm revolves around deciding timeout values. That is, how long to wait for a request before trying again.
+It is important for performance that the timeout is tight enough.
+The main mechanism to this end is the estimation of the upload bandwidth through a running exponential average of the upload speed (on success) of individual files. 
+Additionally, on each successive retry, the timeout increases by some factor (back-off).
+
 
 ## Examples
 ### `perf_data`
