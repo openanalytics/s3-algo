@@ -1,3 +1,4 @@
+#![type_length_limit="19000000"]
 use crate::timeout::*;
 use futures::{
     compat::{Compat, Future01CompatExt},
@@ -132,23 +133,6 @@ where
             x
         })
         .await
-
-    // TODO: remove following -it's just another WIP in case the above rewrite does not work
-    // stream::iter(jobs)
-        // .zip(stream::iter(0usize..))
-        // .map(|(result, i): (Result<UploadFileResult, Error>, usize)|
-            // result.map(|result| (i, result)))
-        // .try_for_each_concurrent(copy_parallelization, |result| async move {
-            // // result.seq = i;
-            // progress(result);
-            // Ok(())
-        // })
-        // .then(move |x| {
-            // Delay::new(Instant::now() + Duration::from_secs(extra_copy_time_s))
-                // .map(move |_| x)
-                // .context(err::Delay)
-            // }
-        // )
 }
 
 
