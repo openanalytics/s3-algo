@@ -9,15 +9,17 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-futures = "0.1.25"
-futures-stopwatch = "0.1.0"
-futures-retry = {git = "https://gitlab.com/Ploppz/futures-retry.git"}
-rusoto_s3 = "0.41.0"
-rusoto_core = "0.41.0"
-tokio = "0.1.22"
-bytes = "0.4.12"
+futures = {version = "0.3.1", features = ["compat"]}
+futures-stopwatch = "0.3.0"
+futures-retry = {git = "https://gitlab.com/Ploppz/futures-retry.git", branch = "counter"}
+rusoto_s3 = "0.42.0"
+rusoto_core = "0.42.0"
+tokio = {version = "0.2.9", features = ["time", "fs"]}
+tokio-util = {version = "0.2.0", features = ["codec"]}
+bytes05 = {version = "0.5.3", package = "bytes"}
+bytes04 = {version = "0.4.12", package = "bytes"}
 serde = {optional = true, version = "1.0", features = ["derive"]}
-snafu = {version = "0.6.0", features = ["futures-01"] }
+snafu = {version = "0.6.1", features = ["futures"]}
 
 [dev-dependencies]
 tempdir = "0.3.7"

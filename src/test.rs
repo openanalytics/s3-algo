@@ -9,6 +9,14 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use tokio::time::delay_for;
+use futures::{
+    future::{
+        TryFutureExt,
+        ok,
+    },
+    compat::Compat,
+};
 use tempdir::TempDir;
 
 /// Timeout implementation used for testing
@@ -69,7 +77,7 @@ fn s3_upload_files_seq_count() {
             let mut counter = counter.lock().unwrap();
             assert_eq!(*counter, res.seq);
             *counter += 1;
-            Ok(())
+            ok(())
         },
         PutObjectRequest::default,
     );
@@ -141,7 +149,7 @@ fn test_s3_upload_files() {
         all_file_paths!(dir),
         strip_prefix(tmp_dir.path().to_owned()),
         cfg,
-        |_res| Ok(()),
+        |_res| ok(()),
         PutObjectRequest::default,
     );
 
@@ -160,7 +168,7 @@ fn test_s3_upload_files() {
             key: key.to_str().unwrap().to_string(),
             ..Default::default()
         });
-        let response = runtime.block_on(response).unwrap();
+        let response = runtime.block_on(response.compat()).unwrap();
 
         let mut body = response.body.unwrap().into_blocking_read();
         let mut content = Vec::new();
@@ -909,11 +917,11 @@ impl S3WithDefaults for S3MockTimeout {
             // fail
             *self.fails.lock().unwrap() += 1;
             RusotoFuture::from_future(
-                tokio::timer::Delay::new(Instant::now() + Duration::from_secs(10))
-                    .map(|_| PutObjectOutput::default())
+                Compat::new(ok::<_, u8>(delay_for(Duration::from_secs(10)))
+                    .map_ok(|_| PutObjectOutput::default())
                     .map_err(|_| {
                         RusotoError::HttpDispatch(request::HttpDispatchError::new("timeout".into()))
-                    }),
+                    }))
             )
         }
     }

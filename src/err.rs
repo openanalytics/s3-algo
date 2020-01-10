@@ -14,7 +14,7 @@ pub enum Error {
     /// Error originating from tokio::Delay
     #[snafu(display("Tokio timer error: {}", source))]
     Delay {
-        source: tokio::timer::Error,
+        source: tokio::time::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("S3 'put object' error on key '{}': {}", key, source))]

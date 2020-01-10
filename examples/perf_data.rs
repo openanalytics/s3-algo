@@ -4,6 +4,9 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
+use futures::{
+    future::ok
+};
 
 macro_rules! all_file_paths {
     ($dir_path:expr $(, max_open = $max_open:expr)?) => {
@@ -80,7 +83,7 @@ fn benchmark_s3_upload(
     upload_perf_log_init(&mut std::io::stdout());
     let progress = |res: UploadFileResult| {
         upload_perf_log_update(&mut std::io::stdout(), res);
-        Ok(())
+        ok(())
     };
     let files_to_upload = all_file_paths!(dir_path);
     let future = s3_upload_files(

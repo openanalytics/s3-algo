@@ -1,20 +1,29 @@
 use crate::timeout::*;
-use bytes::BytesMut;
-use futures::{future::ok, future::Future, prelude::*, stream};
+use futures::{
+    compat::{Compat, Future01CompatExt},
+    future::{
+        ok,
+        Future,
+        TryFutureExt,
+    },
+    prelude::*,
+    stream};
 use futures_retry::{FutureRetry, RetryPolicy};
-use futures_stopwatch::Stopwatch;
+use futures_stopwatch::try_stopwatch;
 use rusoto_core::ByteStream;
 use rusoto_s3::*;
-use snafu::futures01::FutureExt;
+use snafu::{
+    futures::TryFutureExt as STryFutureEXt,
+    ResultExt
+};
 use std::{
+    marker::Unpin,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::{
-    codec::{BytesCodec, FramedRead},
-    timer::Delay,
-};
+use tokio::time::delay_for;
+use tokio_util::codec::{BytesCodec, FramedRead};
 
 mod err;
 pub mod timeout;
@@ -62,7 +71,7 @@ pub fn strip_prefix<P: AsRef<Path>>(prefix: P) -> impl Fn(&Path) -> PathBuf {
 ///
 /// `default_request` constructs the default request struct - only the fields `bucket`, `key`,
 /// `body` and `content_length` are overwritten by the upload algorithm.
-pub fn s3_upload_files<P, F, C, I, T, R>(
+pub async fn s3_upload_files<P, F, C, I, T, R>(
     s3: C,
     bucket: String,
     files: I,
@@ -70,14 +79,14 @@ pub fn s3_upload_files<P, F, C, I, T, R>(
     cfg: UploadConfig,
     progress: P,
     default_request: R,
-) -> impl Future<Item = (), Error = Error>
+) -> Result<(), Error>
 where
     P: Fn(UploadFileResult) -> F,
-    F: IntoFuture<Item = (), Error = Error>,
-    C: S3 + Clone + Send,
+    F: Future<Output = Result<(), Error>>,
+    C: S3 + Clone + Send + Unpin,
     I: Iterator<Item = PathBuf>,
     T: Fn(&Path) -> PathBuf,
-    R: Fn() -> PutObjectRequest + Clone,
+    R: Fn() -> PutObjectRequest + Clone + Unpin,
 {
     let extra_copy_time_s = cfg.extra_copy_time_s;
     let extra_copy_file_time_s = cfg.extra_copy_file_time_s;
@@ -87,11 +96,11 @@ where
     let timeout_state = Arc::new(Mutex::new(TimeoutState::new(cfg)));
 
     // Make an iterator over jobs - need to make a future which fails if dir_path does not exist
-    let jobs = ok(files.map(move |path| {
+    let jobs = files.map(move |path| {
         let state = timeout_state.clone();
         let key = path_to_key(path.as_ref()).to_string_lossy().to_string();
 
-        Ok(s3_upload_file(
+        s3_upload_file(
             s3.clone(),
             bucket.clone(),
             path,
@@ -99,36 +108,49 @@ where
             n_retries,
             state,
             default_request.clone(),
-        ))
-    }));
+        )
+    });
 
-    jobs.and_then(move |jobs|
-        // Run jobs in parallel,
-        //  adding eventual delays after each file upload and also at the end,
-        //  and counting the progress
-        stream::iter_result(jobs)
-            .and_then(move |x| {
-                Delay::new(Instant::now() + Duration::from_secs(extra_copy_file_time_s))
-                    .map(move |_| x)
-                    .context(err::Delay)
-                }
-            )
-            .buffer_unordered(copy_parallelization)
-            .zip(stream::iter_ok(0..))
-            .and_then(move |(mut result, i)| {
-                result.seq = i;
-                progress(result)
-            })
-            .for_each(|()| {
-                Ok(())
-            })
-            .and_then(move |x| {
-                Delay::new(Instant::now() + Duration::from_secs(extra_copy_time_s))
-                    .map(move |_| x)
-                    .context(err::Delay)
-                }
-            ))
+    // Run jobs in parallel,
+    //  adding eventual delays after each file upload and also at the end,
+    //  and counting the progress
+    stream::iter(jobs)
+        .then(move |x| async move {
+            delay_for(Duration::from_secs(extra_copy_file_time_s)).await;
+            x
+        })
+        .buffer_unordered(copy_parallelization)
+        .zip(stream::iter(0..))
+        .map(|(result, i): (Result<UploadFileResult, Error>, usize)|
+            result.map(|result| (i, result)))
+        .try_for_each(|(i, mut result)| {
+            result.seq = i;
+            progress(result)
+        })
+        .then(move |x| async move {
+            delay_for(Duration::from_secs(extra_copy_time_s)).await;
+            x
+        })
+        .await
+
+    // TODO: remove following -it's just another WIP in case the above rewrite does not work
+    // stream::iter(jobs)
+        // .zip(stream::iter(0usize..))
+        // .map(|(result, i): (Result<UploadFileResult, Error>, usize)|
+            // result.map(|result| (i, result)))
+        // .try_for_each_concurrent(copy_parallelization, |result| async move {
+            // // result.seq = i;
+            // progress(result);
+            // Ok(())
+        // })
+        // .then(move |x| {
+            // Delay::new(Instant::now() + Duration::from_secs(extra_copy_time_s))
+                // .map(move |_| x)
+                // .context(err::Delay)
+            // }
+        // )
 }
+
 
 #[derive(Debug, Clone, Copy)]
 pub struct UploadFileResult {
@@ -147,7 +169,13 @@ pub struct UploadFileResult {
     pub est: f64,
 }
 
-fn s3_upload_file<C, T, R>(
+pub fn bytes05_to_04(bytes: bytes05::Bytes) -> bytes04::Bytes {
+    let mut b =bytes04::Bytes::new();
+    b.extend(&*bytes);
+    b
+}
+
+async fn s3_upload_file<C, T, R>(
     s3: C,
     bucket: String,
     path: PathBuf,
@@ -155,63 +183,72 @@ fn s3_upload_file<C, T, R>(
     n_retries: usize,
     timeout: Arc<Mutex<T>>,
     default_request: R,
-) -> impl Future<Item = UploadFileResult, Error = Error>
+) -> Result<UploadFileResult, Error>
 where
-    C: S3 + Clone + Send,
+    C: S3 + Clone + Send + Unpin,
     T: Timeout,
-    R: Fn() -> PutObjectRequest + Clone,
+    R: Fn() -> PutObjectRequest + Clone + Unpin,
 {
     let timeout1 = timeout.clone();
     let timeout2 = timeout;
-    Stopwatch::new(
+    try_stopwatch(
         // Time the entire file upload (across all retries)
         FutureRetry::new(
             // Future factory - creates a future that reads file while uploading it
             move |attempts| {
                 // variables captures are owned by this closure, but clones need be sent to further nested closures
-                let (s3, bucket, key, timeout, default_request) = (
+                let (s3, bucket, key, timeout, default_request, path) = (
                     s3.clone(),
                     bucket.clone(),
                     key.clone(),
                     timeout1.clone(),
                     default_request.clone(),
+                    path.clone()
                 );
 
-                Stopwatch::new(
-                    // Time each retry - we will thus only get the time of the last, successful result (if any)
-                    tokio::fs::File::open(path.clone())
-                        .and_then(|file| file.metadata())
-                        .and_then(|(file, metadata)| {
-                            // Create stream - we need `len` (size of file) further down the stream in the
-                            // S3 put_object request
-                            let len = metadata.len();
-                            Ok((
-                                FramedRead::new(file, BytesCodec::new()).map(BytesMut::freeze),
-                                len,
-                            ))
+                try_stopwatch(
+                    async move {
+                        // Time each retry - we will thus only get the time of the last, successful result (if any)
+                        let file = tokio::fs::File::open(path.clone()).await
+                            .with_context({
+                                let path = path.clone();
+                                move || err::Io {description: path.display().to_string()}
+                            })?;
+                        let metadata = file.metadata().await
+                            .with_context({
+                                let path = path.clone();
+                                move || err::Io {description: path.display().to_string()}
+                            })?;
+                        // Create stream - we need `len` (size of file) further down the stream in the
+                        // S3 put_object request
+                        let len = metadata.len();
+
+                        // let a : String =ok(FramedRead::new(file, BytesCodec::new()).map_ok(BytesMut::freeze));
+
+                        let stream = Compat::new(
+                            ok(FramedRead::new(file, BytesCodec::new()).map_ok(bytes05::BytesMut::freeze))
+                                .try_flatten_stream()
+                                .map_ok(bytes05_to_04)
+                        );
+                        // ^ TODO how to remove the ok()?
+
+                        let (est, timeout_value) = {
+                            let t = timeout.lock().unwrap();
+                            (t.get_estimate(), t.get_timeout(len, attempts))
+                        }; // TODO simplify this back
+                        s3.put_object(PutObjectRequest {
+                            bucket: bucket.clone(),
+                            key: key.clone(),
+                            body: Some(ByteStream::new(stream)),
+                            content_length: Some(len as i64),
+                            ..default_request()
                         })
-                        .with_context({
-                            let path = path.clone();
-                            move || err::Io {
-                                description: format!("{}", path.display()),
-                            }
-                        })
-                        .and_then(move |(stream, len)| {
-                            let (est, timeout_value) = {
-                                let t = timeout.lock().unwrap();
-                                (t.get_estimate(), t.get_timeout(len, attempts))
-                            }; // TODO simplify this back
-                            s3.put_object(PutObjectRequest {
-                                bucket: bucket.clone(),
-                                key: key.clone(),
-                                body: Some(ByteStream::new(stream)),
-                                content_length: Some(len as i64),
-                                ..default_request()
-                            })
-                            .with_timeout(timeout_value)
-                            .with_context(move || err::PutObject { key })
-                            .map(move |_| (est, len))
-                        }),
+                        .with_timeout(timeout_value)
+                        .compat()
+                        .with_context(move || err::PutObject { key })
+                        .map_ok(move |_| (est, len))
+                        .await
+                    }
                 )
             },
             // retry function
@@ -225,7 +262,7 @@ where
                 }
             },
         ),
-    )
+    ).await
     .map(
         move |((((est, bytes), success_time), attempts), total_time)| {
             // Results from this upload are in - update the timeout state
