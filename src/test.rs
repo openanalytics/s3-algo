@@ -127,8 +127,8 @@ macro_rules! all_file_paths {
                     }
                 }))};
 }
-#[test]
-fn test_s3_upload_files() {
+#[tokio::test]
+async fn test_s3_upload_files() {
     const N_FILES: usize = 100;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
     let cfg = UploadConfig::default();
@@ -143,7 +143,7 @@ fn test_s3_upload_files() {
     }
 
     println!("Upload {} to {:?} ", dir.display(), dir_key);
-    let future = s3_upload_files(
+    s3_upload_files(
         testing_s3_client(),
         "test-bucket".to_string(),
         all_file_paths!(dir),
@@ -151,10 +151,7 @@ fn test_s3_upload_files() {
         cfg,
         |_res| ok(()),
         PutObjectRequest::default,
-    );
-
-    let mut runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(future).unwrap();
+    ).await;
 
     let s3 = testing_s3_client();
 
@@ -168,7 +165,7 @@ fn test_s3_upload_files() {
             key: key.to_str().unwrap().to_string(),
             ..Default::default()
         });
-        let response = runtime.block_on(response.compat()).unwrap();
+        let response = response.compat().await.unwrap();
 
         let mut body = response.body.unwrap().into_blocking_read();
         let mut content = Vec::new();

@@ -1,3 +1,6 @@
+fn main() {
+}
+/*
 #![type_length_limit="9479963"]
 use clap::*;
 use s3_upload::*;
@@ -131,3 +134,4 @@ pub fn upload_perf_log_update<W: Write>(out: &mut W, res: UploadFileResult) {
     write_cell!(out, res.est);
     let _ = writeln!(out);
 }
+*/
