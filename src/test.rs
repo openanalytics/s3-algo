@@ -3,6 +3,7 @@ use crate::{timeout::Timeout, *};
 use multi_default_trait_impl::{default_trait_impl, trait_impl};
 use rand::Rng;
 use rusoto_core::*;
+use tokio_compat::prelude::*;
 use std::{
     io::Read,
     path::Path,
@@ -54,6 +55,7 @@ fn rand_string(n: usize) -> String {
 
 #[test]
 fn s3_upload_files_seq_count() {
+    // NOTE: doesn't need tokio-compat because it uses mock S3
     const N_FILES: usize = 100;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
     let folder = tmp_dir.path().join("folder");
@@ -88,6 +90,7 @@ fn s3_upload_files_seq_count() {
 
 #[test]
 fn s3_upload_file_attempts_count() {
+    // NOTE: doesn't need tokio-compat because it uses mock S3
     let timeout = Arc::new(Mutex::new(TimeoutState));
 
     const ATTEMPTS: usize = 4;
@@ -127,52 +130,55 @@ macro_rules! all_file_paths {
                     }
                 }))};
 }
-#[tokio::test]
-async fn test_s3_upload_files() {
-    const N_FILES: usize = 100;
-    let tmp_dir = TempDir::new("s3-testing").unwrap();
-    let cfg = UploadConfig::default();
 
-    let dir_key = Path::new(&rand_string(4))
-        .join(rand_string(4))
-        .join(rand_string(4));
-    let dir = tmp_dir.path().join(&dir_key);
-    std::fs::create_dir_all(&dir).unwrap();
-    for i in 0..N_FILES {
-        std::fs::write(dir.join(format!("img_{}.tif", i)), "file contents").unwrap();
-    }
+#[test]
+fn test_s3_upload_files() {
+    tokio_compat::run_std(async { 
+        const N_FILES: usize = 100;
+        let tmp_dir = TempDir::new("s3-testing").unwrap();
+        let cfg = UploadConfig::default();
 
-    println!("Upload {} to {:?} ", dir.display(), dir_key);
-    s3_upload_files(
-        testing_s3_client(),
-        "test-bucket".to_string(),
-        all_file_paths!(dir),
-        strip_prefix(tmp_dir.path().to_owned()),
-        cfg,
-        |_res| ok(()),
-        PutObjectRequest::default,
-    ).await;
+        let dir_key = Path::new(&rand_string(4))
+            .join(rand_string(4))
+            .join(rand_string(4));
+        let dir = tmp_dir.path().join(&dir_key);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..N_FILES {
+            std::fs::write(dir.join(format!("img_{}.tif", i)), "file contents").unwrap();
+        }
 
-    let s3 = testing_s3_client();
+        println!("Upload {} to {:?} ", dir.display(), dir_key);
+        s3_upload_files(
+            testing_s3_client(),
+            "test-bucket".to_string(),
+            all_file_paths!(dir),
+            strip_prefix(tmp_dir.path().to_owned()),
+            cfg,
+            |_res| ok(()),
+            PutObjectRequest::default,
+        ).await.unwrap();
 
-    // Check that all files are there
-    for i in 0..N_FILES {
-        // let key = format!("{}/img_{}.tif", dir_key, i);
-        let key = dir_key.join(format!("img_{}.tif", i));
+        let s3 = testing_s3_client();
 
-        let response = s3.get_object(GetObjectRequest {
-            bucket: "test-bucket".to_string(),
-            key: key.to_str().unwrap().to_string(),
-            ..Default::default()
-        });
-        let response = response.compat().await.unwrap();
+        // Check that all files are there
+        for i in 0..N_FILES {
+            // let key = format!("{}/img_{}.tif", dir_key, i);
+            let key = dir_key.join(format!("img_{}.tif", i));
 
-        let mut body = response.body.unwrap().into_blocking_read();
-        let mut content = Vec::new();
-        body.read_to_end(&mut content).unwrap();
-        let content = std::str::from_utf8(&content).unwrap();
-        assert_eq!(content, "file contents");
-    }
+            let response = s3.get_object(GetObjectRequest {
+                bucket: "test-bucket".to_string(),
+                key: key.to_str().unwrap().to_string(),
+                ..Default::default()
+            });
+            let response = response.compat().await.unwrap();
+
+            let mut body = response.body.unwrap().into_blocking_read();
+            let mut content = Vec::new();
+            body.read_to_end(&mut content).unwrap();
+            let content = std::str::from_utf8(&content).unwrap();
+            assert_eq!(content, "file contents");
+        }
+    })
 }
 
 /* TODO https://github.com/rusoto/rusoto/issues/1546

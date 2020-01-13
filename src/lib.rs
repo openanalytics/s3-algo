@@ -1,3 +1,6 @@
+//! NOTE: futures from `futures v0.1` are used internally and thus `tokio-compat` is probably
+//! needed to run the futures.
+
 use crate::timeout::*;
 use futures::{
     compat::{Compat, Future01CompatExt},
@@ -233,7 +236,7 @@ where
                         .await
                     }
                 )
-                .boxed() // to avoid too big type lenght while compiling...
+                .boxed() // to avoid too big type length while compiling...
             },
             // retry function
             {

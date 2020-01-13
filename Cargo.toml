@@ -1,7 +1,7 @@
 [package]
 name = "s3-upload"
 description = "Algorithm for uploading multiple files to AWS"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["Erlend Langseth <3rlendhl@gmail.com>"]
 license = "MIT"
 edition = "2018"
@@ -27,6 +27,7 @@ multi-default-trait-impl = "0.1.2"
 rand = "0.7.0"
 walkdir = "2.2.9"
 clap = "2.33.0"
+tokio-compat = {version = "0.1.4", features = ["rt-current-thread"]}
 
 [features]
 default = ["serde1"]
