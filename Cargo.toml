@@ -1,6 +1,6 @@
 [package]
-name = "s3-upload"
-description = "Algorithm for uploading multiple files to AWS"
+name = "s3-algo"
+description = "High-performance algorithms for batch operations to Amazon S3"
 version = "0.1.4"
 authors = ["Erlend Langseth <3rlendhl@gmail.com>"]
 license = "MIT"

@@ -1,5 +1,5 @@
 use clap::*;
-use s3_upload::*;
+use s3_algo::*;
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -73,7 +73,7 @@ fn benchmark_s3_upload(
     prefix: String,
     copy_parallelization: usize,
 ) {
-    let s3 = s3_upload::testing_s3_client();
+    let s3 = s3_algo::testing_s3_client();
 
     let cfg = UploadConfig {
         copy_parallelization,
@@ -86,17 +86,18 @@ fn benchmark_s3_upload(
         ok(())
     };
     let files_to_upload = all_file_paths!(dir_path);
-    let future = s3_upload_files(
-        s3,
-        bucket,
-        files_to_upload,
-        move |path| PathBuf::from(&prefix).join(path.strip_prefix(&dir_path).unwrap()),
-        cfg,
-        progress,
-        Default::default,
-    );
-    let mut runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(future).unwrap();
+
+    tokio_compat::run_std(async move {
+        s3_upload_files(
+            s3,
+            bucket,
+            files_to_upload,
+            move |path| PathBuf::from(&prefix).join(path.strip_prefix(&dir_path).unwrap()),
+            cfg,
+            progress,
+            Default::default,
+        ).await.unwrap();
+    });
 }
 
 // Helpers for writing data
