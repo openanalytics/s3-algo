@@ -1,4 +1,4 @@
-# `s3-upload`
+# `s3-algo`
 
 High-performance algorithms for batch operations in Amazon S3, on top of [rusoto](https://github.com/rusoto/rusoto)
 
