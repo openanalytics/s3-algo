@@ -3,12 +3,11 @@ use crate::{timeout::Timeout, *};
 use multi_default_trait_impl::{default_trait_impl, trait_impl};
 use rand::Rng;
 use rusoto_core::*;
-use tokio_compat::prelude::*;
 use std::{
     io::Read,
     path::Path,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::time::delay_for;
 use futures::{
@@ -116,20 +115,6 @@ fn s3_upload_file_attempts_count() {
     assert_eq!(result.attempts, ATTEMPTS);
 }
 
-macro_rules! all_file_paths {
-    ($dir_path:expr $(, max_open = $max_open:expr)?) => {
-        walkdir::WalkDir::new(&$dir_path)
-            $(.max_open($max_open))?
-            .into_iter()
-            .filter_map(|entry|
-                entry.ok().and_then(|entry| {
-                    if entry.file_type().is_file() {
-                        Some(entry.path().to_owned())
-                    } else {
-                        None
-                    }
-                }))};
-}
 
 #[test]
 fn test_s3_upload_files() {
@@ -180,6 +165,10 @@ fn test_s3_upload_files() {
         }
     })
 }
+
+// TODO:
+// fn test_s3_delete_files
+// - and make it delete enough files to trigger paging
 
 /* TODO https://github.com/rusoto/rusoto/issues/1546
 #[test]

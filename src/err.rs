@@ -1,6 +1,8 @@
 use snafu::{Backtrace, Snafu};
 use std::io;
 type PutError = rusoto_core::RusotoError<rusoto_s3::PutObjectError>;
+type ListObjectsV2Error = rusoto_core::RusotoError<rusoto_s3::ListObjectsV2Error>;
+type DeleteObjectsError = rusoto_core::RusotoError<rusoto_s3::DeleteObjectsError>;
 
 #[derive(Snafu, Debug)]
 #[snafu(visibility = "pub(crate)")]
@@ -22,5 +24,13 @@ pub enum Error {
         source: PutError,
         key: String,
         backtrace: Backtrace,
+    },
+    #[snafu(display("Error listing objects in S3: {:?}", source))]
+    ListObjectsV2 {
+        source: ListObjectsV2Error,
+    },
+    #[snafu(display("Error deleting objects in S3: {:?}", source))]
+    DeleteObjects {
+        source: DeleteObjectsError,
     },
 }
