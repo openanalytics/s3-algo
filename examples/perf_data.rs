@@ -1,3 +1,4 @@
+#![type_length_limit="9479963"]
 use clap::*;
 use s3_upload::*;
 use std::{

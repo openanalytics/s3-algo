@@ -14,7 +14,7 @@ futures-stopwatch = "0.3.0"
 futures-retry = {git = "https://gitlab.com/Ploppz/futures-retry.git", branch = "counter"}
 rusoto_s3 = "0.42.0"
 rusoto_core = "0.42.0"
-tokio = {version = "0.2.9", features = ["time", "fs"]}
+tokio = {version = "0.2.9", features = ["time", "fs", "macros", "rt-threaded"]}
 tokio-util = {version = "0.2.0", features = ["codec"]}
 bytes05 = {version = "0.5.3", package = "bytes"}
 bytes04 = {version = "0.4.12", package = "bytes"}

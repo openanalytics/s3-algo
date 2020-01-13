@@ -1,4 +1,4 @@
-#![type_length_limit="19000000"]
+#![type_length_limit="10000000"]
 use crate::timeout::*;
 use futures::{
     compat::{Compat, Future01CompatExt},
