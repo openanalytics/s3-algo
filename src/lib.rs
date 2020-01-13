@@ -1,4 +1,3 @@
-#![type_length_limit="18960398"]
 use crate::timeout::*;
 use futures::{
     compat::{Compat, Future01CompatExt},
@@ -84,10 +83,10 @@ pub async fn s3_upload_files<P, F, C, I, T, R>(
 where
     P: Fn(UploadFileResult) -> F,
     F: Future<Output = Result<(), Error>>,
-    C: S3 + Clone + Send + Unpin,
+    C: S3 + Clone + Send + Sync + Unpin,
     I: Iterator<Item = PathBuf>,
     T: Fn(&Path) -> PathBuf,
-    R: Fn() -> PutObjectRequest + Clone + Unpin,
+    R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
 {
     let extra_copy_time_s = cfg.extra_copy_time_s;
     let extra_copy_file_time_s = cfg.extra_copy_file_time_s;
@@ -169,9 +168,9 @@ async fn s3_upload_file<C, T, R>(
     default_request: R,
 ) -> Result<UploadFileResult, Error>
 where
-    C: S3 + Clone + Send + Unpin,
-    T: Timeout,
-    R: Fn() -> PutObjectRequest + Clone + Unpin,
+    C: S3 + Clone + Send + Unpin + Sync,
+    T: Timeout + Send + Sync,
+    R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
 {
     let timeout1 = timeout.clone();
     let timeout2 = timeout;
@@ -234,6 +233,7 @@ where
                         .await
                     }
                 )
+                .boxed() // to avoid too big type lenght while compiling...
             },
             // retry function
             {
