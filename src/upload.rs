@@ -119,11 +119,14 @@ where
 {
     let timeout1 = timeout.clone();
     let timeout2 = timeout;
+    let mut attempts1 = 0;
+    let mut attempts2 = 0;
     try_stopwatch(
         // Time the entire file upload (across all retries)
         FutureRetry::new(
             // Future factory - creates a future that reads file while uploading it
-            move |attempts| {
+            move || {
+                attempts1 += 1;
                 // variables captures are owned by this closure, but clones need be sent to further nested closures
                 let (s3, bucket, key, timeout, default_request, path) = (
                     s3.clone(),
@@ -162,7 +165,7 @@ where
 
                         let (est, timeout_value) = {
                             let t = timeout.lock().unwrap();
-                            (t.get_estimate(), t.get_timeout(len, attempts))
+                            (t.get_estimate(), t.get_timeout(len, attempts1))
                         }; // TODO simplify this back
                         s3.put_object(PutObjectRequest {
                             bucket: bucket.clone(),
@@ -182,8 +185,9 @@ where
             },
             // retry function
             {
-                move |e, attempts| {
-                    if attempts > n_retries {
+                move |e| {
+                    attempts2 += 1;
+                    if attempts2 > n_retries {
                         RetryPolicy::ForwardError(e)
                     } else {
                         RetryPolicy::WaitRetry(Duration::from_millis(200)) //  TODO adjust the time, maybe depending on retries
@@ -207,4 +211,5 @@ where
             res
         },
     )
+    .map_err(|(err, _attempts)| err)
 }
