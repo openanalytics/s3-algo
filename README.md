@@ -4,7 +4,7 @@ High-performance algorithms for batch operations in Amazon S3, on top of [rusoto
 
 https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html
 
-Per now, uploading multiple files has been the main focus.
+Currently, uploading multiple files has been the main focus.
 Deletion of prefix is also implemented.
 Listing of files is planned.
 
