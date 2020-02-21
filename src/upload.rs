@@ -122,59 +122,15 @@ where
             move || {
                 attempts1 += 1;
                 // variables captures are owned by this closure, but clones need be sent to further nested closures
-                let (s3, bucket, key, timeout, default_request, path) = (
+                try_stopwatch(stream_to_s3(
                     s3.clone(),
+                    path.clone(),
                     bucket.clone(),
                     key.clone(),
                     timeout1.clone(),
+                    attempts1,
                     default_request.clone(),
-                    path.clone(),
-                );
-
-                try_stopwatch(async move {
-                    // Time each retry - we will thus only get the time of the last, successful result (if any)
-                    let file = tokio::fs::File::open(path.clone()).await.with_context({
-                        let path = path.clone();
-                        move || err::Io {
-                            description: path.display().to_string(),
-                        }
-                    })?;
-                    let metadata = file.metadata().await.with_context({
-                        let path = path.clone();
-                        move || err::Io {
-                            description: path.display().to_string(),
-                        }
-                    })?;
-                    // Create stream - we need `len` (size of file) further down the stream in the
-                    // S3 put_object request
-                    let len = metadata.len();
-
-                    // let a : String =ok(FramedRead::new(file, BytesCodec::new()).map_ok(BytesMut::freeze));
-
-                    let stream =
-                        ok(FramedRead::new(file, BytesCodec::new())
-                            .map_ok(bytes::BytesMut::freeze))
-                        .try_flatten_stream();
-
-                    let (est, timeout_value) = {
-                        let t = timeout.lock().unwrap();
-                        (t.get_estimate(), t.get_timeout(len, attempts1))
-                    };
-                    tokio::time::timeout(
-                        timeout_value,
-                        s3.put_object(PutObjectRequest {
-                            bucket: bucket.clone(),
-                            key: key.clone(),
-                            body: Some(ByteStream::new(stream)),
-                            content_length: Some(len as i64),
-                            ..default_request()
-                        }),
-                    )
-                    .await
-                    .with_context(|| err::Timeout {})
-                    .and_then(move |result| result.with_context(move || err::PutObject { key }))
-                    .map(move |_| (est, len))
-                })
+                ))
                 .boxed() // to avoid too big type length while compiling...
             },
             // retry function
@@ -207,4 +163,61 @@ where
         },
     )
     .map_err(|(err, _attempts)| err)
+}
+
+/// returns (current estimate, number of bytes uploaded)
+async fn stream_to_s3<T, C, R>(
+    s3: C,
+    path: PathBuf,
+    bucket: String,
+    key: String,
+    timeout: Arc<Mutex<T>>,
+    attempts: usize,
+    default_req: R,
+) -> Result<(f64, u64), Error>
+where
+    C: S3 + Clone + Send + Unpin + Sync,
+    T: Timeout + Send + Sync,
+    R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
+{
+    // Time each retry - we will thus only get the time of the last, successful result (if any)
+    let file = tokio::fs::File::open(path.clone()).await.with_context({
+        let path = path.clone();
+        move || err::Io {
+            description: path.display().to_string(),
+        }
+    })?;
+    let metadata = file.metadata().await.with_context({
+        let path = path.clone();
+        move || err::Io {
+            description: path.display().to_string(),
+        }
+    })?;
+    // Create stream - we need `len` (size of file) further down the stream in the
+    // S3 put_object request
+    let len = metadata.len();
+
+    // let a : String =ok(FramedRead::new(file, BytesCodec::new()).map_ok(BytesMut::freeze));
+
+    let stream = ok(FramedRead::new(file, BytesCodec::new()).map_ok(bytes::BytesMut::freeze))
+        .try_flatten_stream();
+
+    let (est, timeout_value) = {
+        let t = timeout.lock().unwrap();
+        (t.get_estimate(), t.get_timeout(len, attempts))
+    };
+    tokio::time::timeout(
+        timeout_value,
+        s3.put_object(PutObjectRequest {
+            bucket: bucket.clone(),
+            key: key.clone(),
+            body: Some(ByteStream::new(stream)),
+            content_length: Some(len as i64),
+            ..default_req()
+        }),
+    )
+    .await
+    .with_context(|| err::Timeout {})
+    .and_then(move |result| result.with_context(move || err::PutObject { key }))
+    .map(move |_| (est, len))
 }
