@@ -16,41 +16,34 @@
 
 use crate::timeout::*;
 use futures::{
-    compat::{Compat, Future01CompatExt},
-    future::{
-        ok,
-        Future,
-        TryFutureExt,
-    },
+    future::{ok, Future, TryFutureExt},
     prelude::*,
-    stream};
+    stream,
+};
 use futures_retry::{FutureRetry, RetryPolicy};
 use futures_stopwatch::try_stopwatch;
 use rusoto_core::ByteStream;
 use rusoto_s3::*;
-use snafu::{
-    futures::TryFutureExt as STryFutureEXt,
-    ResultExt
-};
+use snafu::ResultExt;
 use std::{
     marker::Unpin,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration},
+    time::Duration,
 };
 use tokio::time::delay_for;
 use tokio_util::codec::{BytesCodec, FramedRead};
 
-mod delete;
-mod upload;
-mod err;
 mod config;
+mod delete;
+mod err;
+mod upload;
 
 pub use delete::*;
 pub use upload::*;
 pub mod timeout;
-pub use err::*;
 pub use config::UploadConfig;
+pub use err::*;
 
 #[cfg(test)]
 mod test;
@@ -75,4 +68,3 @@ pub fn testing_s3_client() -> S3Client {
 pub fn strip_prefix<P: AsRef<Path>>(prefix: P) -> impl Fn(&Path) -> PathBuf {
     move |path| path.strip_prefix(prefix.as_ref()).unwrap().to_path_buf()
 }
-

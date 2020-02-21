@@ -25,12 +25,10 @@ pub enum Error {
         key: String,
         backtrace: Backtrace,
     },
+    #[snafu(display("S3 operation timed out"))]
+    Timeout { source: tokio::time::Elapsed },
     #[snafu(display("Error listing objects in S3: {:?}", source))]
-    ListObjectsV2 {
-        source: ListObjectsV2Error,
-    },
+    ListObjectsV2 { source: ListObjectsV2Error },
     #[snafu(display("Error deleting objects in S3: {:?}", source))]
-    DeleteObjects {
-        source: DeleteObjectsError,
-    },
+    DeleteObjects { source: DeleteObjectsError },
 }

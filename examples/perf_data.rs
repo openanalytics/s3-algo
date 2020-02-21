@@ -1,11 +1,9 @@
 use clap::*;
+use futures::future::ok;
 use s3_algo::*;
 use std::{
     io::Write,
     path::{Path, PathBuf},
-};
-use futures::{
-    future::ok
 };
 
 macro_rules! all_file_paths {
@@ -23,7 +21,8 @@ macro_rules! all_file_paths {
                 }))};
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let mut app = App::new("Example 'perf_data'")
         .before_help("Upload a directory to S3 on localhost.")
         .arg(
@@ -60,14 +59,15 @@ fn main() {
             bucket.to_owned(),
             prefix.to_owned(),
             parallelization,
-        );
+        )
+        .await;
         println!("Done");
     } else {
         app.print_help().unwrap()
     }
 }
 
-fn benchmark_s3_upload(
+async fn benchmark_s3_upload(
     dir_path: PathBuf,
     bucket: String,
     prefix: String,
@@ -87,17 +87,17 @@ fn benchmark_s3_upload(
     };
     let files_to_upload = all_file_paths!(dir_path);
 
-    tokio_compat::run_std(async move {
-        s3_upload_files(
-            s3,
-            bucket,
-            files_to_upload,
-            move |path| PathBuf::from(&prefix).join(path.strip_prefix(&dir_path).unwrap()),
-            cfg,
-            progress,
-            Default::default,
-        ).await.unwrap();
-    });
+    s3_upload_files(
+        s3,
+        bucket,
+        files_to_upload,
+        move |path| PathBuf::from(&prefix).join(path.strip_prefix(&dir_path).unwrap()),
+        cfg,
+        progress,
+        Default::default,
+    )
+    .await
+    .unwrap();
 }
 
 // Helpers for writing data

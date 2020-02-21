@@ -1,23 +1,18 @@
 use crate::testing_s3_client;
 use crate::{timeout::Timeout, *};
+use futures::future::ok;
 use multi_default_trait_impl::{default_trait_impl, trait_impl};
 use rand::Rng;
 use rusoto_core::*;
 use std::{
     io::Read,
     path::Path,
+    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::time::delay_for;
-use futures::{
-    future::{
-        TryFutureExt,
-        ok,
-    },
-    compat::Compat,
-};
 use tempdir::TempDir;
+use tokio::{io::AsyncReadExt, time::delay_for};
 
 /// Timeout implementation used for testing
 struct TimeoutState;
@@ -54,7 +49,6 @@ fn rand_string(n: usize) -> String {
 
 #[test]
 fn s3_upload_files_seq_count() {
-    // NOTE: doesn't need tokio-compat because it uses mock S3
     const N_FILES: usize = 100;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
     let folder = tmp_dir.path().join("folder");
@@ -89,7 +83,6 @@ fn s3_upload_files_seq_count() {
 
 #[test]
 fn s3_upload_file_attempts_count() {
-    // NOTE: doesn't need tokio-compat because it uses mock S3
     let timeout = Arc::new(Mutex::new(TimeoutState));
 
     const ATTEMPTS: usize = 4;
@@ -115,55 +108,54 @@ fn s3_upload_file_attempts_count() {
     assert_eq!(result.attempts, ATTEMPTS);
 }
 
+#[tokio::test]
+async fn test_s3_upload_files() {
+    const N_FILES: usize = 100;
+    let tmp_dir = TempDir::new("s3-testing").unwrap();
+    let cfg = UploadConfig::default();
 
-#[test]
-fn test_s3_upload_files() {
-    tokio_compat::run_std(async { 
-        const N_FILES: usize = 100;
-        let tmp_dir = TempDir::new("s3-testing").unwrap();
-        let cfg = UploadConfig::default();
+    let dir_key = Path::new(&rand_string(4))
+        .join(rand_string(4))
+        .join(rand_string(4));
+    let dir = tmp_dir.path().join(&dir_key);
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..N_FILES {
+        std::fs::write(dir.join(format!("img_{}.tif", i)), "file contents").unwrap();
+    }
 
-        let dir_key = Path::new(&rand_string(4))
-            .join(rand_string(4))
-            .join(rand_string(4));
-        let dir = tmp_dir.path().join(&dir_key);
-        std::fs::create_dir_all(&dir).unwrap();
-        for i in 0..N_FILES {
-            std::fs::write(dir.join(format!("img_{}.tif", i)), "file contents").unwrap();
-        }
+    println!("Upload {} to {:?} ", dir.display(), dir_key);
+    s3_upload_files(
+        testing_s3_client(),
+        "test-bucket".to_string(),
+        all_file_paths!(dir),
+        strip_prefix(tmp_dir.path().to_owned()),
+        cfg,
+        |_res| ok(()),
+        PutObjectRequest::default,
+    )
+    .await
+    .unwrap();
 
-        println!("Upload {} to {:?} ", dir.display(), dir_key);
-        s3_upload_files(
-            testing_s3_client(),
-            "test-bucket".to_string(),
-            all_file_paths!(dir),
-            strip_prefix(tmp_dir.path().to_owned()),
-            cfg,
-            |_res| ok(()),
-            PutObjectRequest::default,
-        ).await.unwrap();
+    let s3 = testing_s3_client();
 
-        let s3 = testing_s3_client();
+    // Check that all files are there
+    for i in 0..N_FILES {
+        // let key = format!("{}/img_{}.tif", dir_key, i);
+        let key = dir_key.join(format!("img_{}.tif", i));
 
-        // Check that all files are there
-        for i in 0..N_FILES {
-            // let key = format!("{}/img_{}.tif", dir_key, i);
-            let key = dir_key.join(format!("img_{}.tif", i));
+        let response = s3.get_object(GetObjectRequest {
+            bucket: "test-bucket".to_string(),
+            key: key.to_str().unwrap().to_string(),
+            ..Default::default()
+        });
+        let response = response.await.unwrap();
 
-            let response = s3.get_object(GetObjectRequest {
-                bucket: "test-bucket".to_string(),
-                key: key.to_str().unwrap().to_string(),
-                ..Default::default()
-            });
-            let response = response.compat().await.unwrap();
-
-            let mut body = response.body.unwrap().into_blocking_read();
-            let mut content = Vec::new();
-            body.read_to_end(&mut content).unwrap();
-            let content = std::str::from_utf8(&content).unwrap();
-            assert_eq!(content, "file contents");
-        }
-    })
+        let mut body = response.body.unwrap().into_async_read();
+        let mut content = Vec::new();
+        body.read_to_end(&mut content).await.unwrap();
+        let content = std::str::from_utf8(&content).unwrap();
+        assert_eq!(content, "file contents");
+    }
 }
 
 // TODO:
@@ -244,602 +236,1496 @@ fn test_rusoto_timeout() {
 // panic
 #[default_trait_impl]
 impl S3 for S3WithDefaults {
-    fn abort_multipart_upload(
-        &self,
+    fn abort_multipart_upload<'life0, 'async_trait>(
+        &'life0 self,
         input: AbortMultipartUploadRequest,
-    ) -> RusotoFuture<AbortMultipartUploadOutput, AbortMultipartUploadError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        AbortMultipartUploadOutput,
+                        RusotoError<AbortMultipartUploadError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn complete_multipart_upload(
-        &self,
+    fn complete_multipart_upload<'life0, 'async_trait>(
+        &'life0 self,
         input: CompleteMultipartUploadRequest,
-    ) -> RusotoFuture<CompleteMultipartUploadOutput, CompleteMultipartUploadError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        CompleteMultipartUploadOutput,
+                        RusotoError<CompleteMultipartUploadError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn copy_object(
-        &self,
+    fn copy_object<'life0, 'async_trait>(
+        &'life0 self,
         input: CopyObjectRequest,
-    ) -> RusotoFuture<CopyObjectOutput, CopyObjectError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<CopyObjectOutput, RusotoError<CopyObjectError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn create_bucket(
-        &self,
+    fn create_bucket<'life0, 'async_trait>(
+        &'life0 self,
         input: CreateBucketRequest,
-    ) -> RusotoFuture<CreateBucketOutput, CreateBucketError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<CreateBucketOutput, RusotoError<CreateBucketError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn create_multipart_upload(
-        &self,
+    fn create_multipart_upload<'life0, 'async_trait>(
+        &'life0 self,
         input: CreateMultipartUploadRequest,
-    ) -> RusotoFuture<CreateMultipartUploadOutput, CreateMultipartUploadError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        CreateMultipartUploadOutput,
+                        RusotoError<CreateMultipartUploadError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket(&self, input: DeleteBucketRequest) -> RusotoFuture<(), DeleteBucketError> {
+    fn delete_bucket<'life0, 'async_trait>(
+        &'life0 self,
+        input: DeleteBucketRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<(), RusotoError<DeleteBucketError>>> + Send + 'async_trait>,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket_analytics_configuration(
-        &self,
+    fn delete_bucket_analytics_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteBucketAnalyticsConfigurationRequest,
-    ) -> RusotoFuture<(), DeleteBucketAnalyticsConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeleteBucketAnalyticsConfigurationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket_cors(
-        &self,
+    fn delete_bucket_cors<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteBucketCorsRequest,
-    ) -> RusotoFuture<(), DeleteBucketCorsError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeleteBucketCorsError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket_encryption(
-        &self,
+    fn delete_bucket_encryption<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteBucketEncryptionRequest,
-    ) -> RusotoFuture<(), DeleteBucketEncryptionError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeleteBucketEncryptionError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket_inventory_configuration(
-        &self,
+    fn delete_bucket_inventory_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteBucketInventoryConfigurationRequest,
-    ) -> RusotoFuture<(), DeleteBucketInventoryConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeleteBucketInventoryConfigurationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket_lifecycle(
-        &self,
+    fn delete_bucket_lifecycle<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteBucketLifecycleRequest,
-    ) -> RusotoFuture<(), DeleteBucketLifecycleError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeleteBucketLifecycleError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket_metrics_configuration(
-        &self,
+    fn delete_bucket_metrics_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteBucketMetricsConfigurationRequest,
-    ) -> RusotoFuture<(), DeleteBucketMetricsConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeleteBucketMetricsConfigurationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket_policy(
-        &self,
+    fn delete_bucket_policy<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteBucketPolicyRequest,
-    ) -> RusotoFuture<(), DeleteBucketPolicyError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeleteBucketPolicyError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket_replication(
-        &self,
+    fn delete_bucket_replication<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteBucketReplicationRequest,
-    ) -> RusotoFuture<(), DeleteBucketReplicationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeleteBucketReplicationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket_tagging(
-        &self,
+    fn delete_bucket_tagging<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteBucketTaggingRequest,
-    ) -> RusotoFuture<(), DeleteBucketTaggingError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeleteBucketTaggingError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_bucket_website(
-        &self,
+    fn delete_bucket_website<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteBucketWebsiteRequest,
-    ) -> RusotoFuture<(), DeleteBucketWebsiteError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeleteBucketWebsiteError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_object(
-        &self,
+    fn delete_object<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteObjectRequest,
-    ) -> RusotoFuture<DeleteObjectOutput, DeleteObjectError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<DeleteObjectOutput, RusotoError<DeleteObjectError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_object_tagging(
-        &self,
+    fn delete_object_tagging<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteObjectTaggingRequest,
-    ) -> RusotoFuture<DeleteObjectTaggingOutput, DeleteObjectTaggingError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        DeleteObjectTaggingOutput,
+                        RusotoError<DeleteObjectTaggingError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_objects(
-        &self,
+    fn delete_objects<'life0, 'async_trait>(
+        &'life0 self,
         input: DeleteObjectsRequest,
-    ) -> RusotoFuture<DeleteObjectsOutput, DeleteObjectsError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<DeleteObjectsOutput, RusotoError<DeleteObjectsError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn delete_public_access_block(
-        &self,
+    fn delete_public_access_block<'life0, 'async_trait>(
+        &'life0 self,
         input: DeletePublicAccessBlockRequest,
-    ) -> RusotoFuture<(), DeletePublicAccessBlockError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<DeletePublicAccessBlockError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_accelerate_configuration(
-        &self,
+    fn get_bucket_accelerate_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketAccelerateConfigurationRequest,
-    ) -> RusotoFuture<GetBucketAccelerateConfigurationOutput, GetBucketAccelerateConfigurationError>
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetBucketAccelerateConfigurationOutput,
+                        RusotoError<GetBucketAccelerateConfigurationError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
     {
         unimplemented!()
     }
-
-    fn get_bucket_acl(
-        &self,
+    fn get_bucket_acl<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketAclRequest,
-    ) -> RusotoFuture<GetBucketAclOutput, GetBucketAclError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<GetBucketAclOutput, RusotoError<GetBucketAclError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_analytics_configuration(
-        &self,
+    fn get_bucket_analytics_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketAnalyticsConfigurationRequest,
-    ) -> RusotoFuture<GetBucketAnalyticsConfigurationOutput, GetBucketAnalyticsConfigurationError>
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetBucketAnalyticsConfigurationOutput,
+                        RusotoError<GetBucketAnalyticsConfigurationError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
     {
         unimplemented!()
     }
-
-    fn get_bucket_cors(
-        &self,
+    fn get_bucket_cors<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketCorsRequest,
-    ) -> RusotoFuture<GetBucketCorsOutput, GetBucketCorsError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<GetBucketCorsOutput, RusotoError<GetBucketCorsError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_encryption(
-        &self,
+    fn get_bucket_encryption<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketEncryptionRequest,
-    ) -> RusotoFuture<GetBucketEncryptionOutput, GetBucketEncryptionError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetBucketEncryptionOutput,
+                        RusotoError<GetBucketEncryptionError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_inventory_configuration(
-        &self,
+    fn get_bucket_inventory_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketInventoryConfigurationRequest,
-    ) -> RusotoFuture<GetBucketInventoryConfigurationOutput, GetBucketInventoryConfigurationError>
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetBucketInventoryConfigurationOutput,
+                        RusotoError<GetBucketInventoryConfigurationError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
     {
         unimplemented!()
     }
-
-    fn get_bucket_lifecycle(
-        &self,
+    fn get_bucket_lifecycle<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketLifecycleRequest,
-    ) -> RusotoFuture<GetBucketLifecycleOutput, GetBucketLifecycleError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<GetBucketLifecycleOutput, RusotoError<GetBucketLifecycleError>>,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_lifecycle_configuration(
-        &self,
+    fn get_bucket_lifecycle_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketLifecycleConfigurationRequest,
-    ) -> RusotoFuture<GetBucketLifecycleConfigurationOutput, GetBucketLifecycleConfigurationError>
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetBucketLifecycleConfigurationOutput,
+                        RusotoError<GetBucketLifecycleConfigurationError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
     {
         unimplemented!()
     }
-
-    fn get_bucket_location(
-        &self,
+    fn get_bucket_location<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketLocationRequest,
-    ) -> RusotoFuture<GetBucketLocationOutput, GetBucketLocationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<GetBucketLocationOutput, RusotoError<GetBucketLocationError>>,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_logging(
-        &self,
+    fn get_bucket_logging<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketLoggingRequest,
-    ) -> RusotoFuture<GetBucketLoggingOutput, GetBucketLoggingError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<GetBucketLoggingOutput, RusotoError<GetBucketLoggingError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_metrics_configuration(
-        &self,
+    fn get_bucket_metrics_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketMetricsConfigurationRequest,
-    ) -> RusotoFuture<GetBucketMetricsConfigurationOutput, GetBucketMetricsConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetBucketMetricsConfigurationOutput,
+                        RusotoError<GetBucketMetricsConfigurationError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_notification(
-        &self,
+    fn get_bucket_notification<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketNotificationConfigurationRequest,
-    ) -> RusotoFuture<NotificationConfigurationDeprecated, GetBucketNotificationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        NotificationConfigurationDeprecated,
+                        RusotoError<GetBucketNotificationError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_notification_configuration(
-        &self,
+    fn get_bucket_notification_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketNotificationConfigurationRequest,
-    ) -> RusotoFuture<NotificationConfiguration, GetBucketNotificationConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        NotificationConfiguration,
+                        RusotoError<GetBucketNotificationConfigurationError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_policy(
-        &self,
+    fn get_bucket_policy<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketPolicyRequest,
-    ) -> RusotoFuture<GetBucketPolicyOutput, GetBucketPolicyError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<GetBucketPolicyOutput, RusotoError<GetBucketPolicyError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_policy_status(
-        &self,
+    fn get_bucket_policy_status<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketPolicyStatusRequest,
-    ) -> RusotoFuture<GetBucketPolicyStatusOutput, GetBucketPolicyStatusError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetBucketPolicyStatusOutput,
+                        RusotoError<GetBucketPolicyStatusError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_replication(
-        &self,
+    fn get_bucket_replication<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketReplicationRequest,
-    ) -> RusotoFuture<GetBucketReplicationOutput, GetBucketReplicationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetBucketReplicationOutput,
+                        RusotoError<GetBucketReplicationError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_request_payment(
-        &self,
+    fn get_bucket_request_payment<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketRequestPaymentRequest,
-    ) -> RusotoFuture<GetBucketRequestPaymentOutput, GetBucketRequestPaymentError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetBucketRequestPaymentOutput,
+                        RusotoError<GetBucketRequestPaymentError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_tagging(
-        &self,
+    fn get_bucket_tagging<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketTaggingRequest,
-    ) -> RusotoFuture<GetBucketTaggingOutput, GetBucketTaggingError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<GetBucketTaggingOutput, RusotoError<GetBucketTaggingError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_versioning(
-        &self,
+    fn get_bucket_versioning<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketVersioningRequest,
-    ) -> RusotoFuture<GetBucketVersioningOutput, GetBucketVersioningError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetBucketVersioningOutput,
+                        RusotoError<GetBucketVersioningError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_bucket_website(
-        &self,
+    fn get_bucket_website<'life0, 'async_trait>(
+        &'life0 self,
         input: GetBucketWebsiteRequest,
-    ) -> RusotoFuture<GetBucketWebsiteOutput, GetBucketWebsiteError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<GetBucketWebsiteOutput, RusotoError<GetBucketWebsiteError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_object(&self, input: GetObjectRequest) -> RusotoFuture<GetObjectOutput, GetObjectError> {
+    fn get_object<'life0, 'async_trait>(
+        &'life0 self,
+        input: GetObjectRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<GetObjectOutput, RusotoError<GetObjectError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_object_acl(
-        &self,
+    fn get_object_acl<'life0, 'async_trait>(
+        &'life0 self,
         input: GetObjectAclRequest,
-    ) -> RusotoFuture<GetObjectAclOutput, GetObjectAclError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<GetObjectAclOutput, RusotoError<GetObjectAclError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_object_legal_hold(
-        &self,
+    fn get_object_legal_hold<'life0, 'async_trait>(
+        &'life0 self,
         input: GetObjectLegalHoldRequest,
-    ) -> RusotoFuture<GetObjectLegalHoldOutput, GetObjectLegalHoldError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<GetObjectLegalHoldOutput, RusotoError<GetObjectLegalHoldError>>,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_object_lock_configuration(
-        &self,
+    fn get_object_lock_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: GetObjectLockConfigurationRequest,
-    ) -> RusotoFuture<GetObjectLockConfigurationOutput, GetObjectLockConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetObjectLockConfigurationOutput,
+                        RusotoError<GetObjectLockConfigurationError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_object_retention(
-        &self,
+    fn get_object_retention<'life0, 'async_trait>(
+        &'life0 self,
         input: GetObjectRetentionRequest,
-    ) -> RusotoFuture<GetObjectRetentionOutput, GetObjectRetentionError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<GetObjectRetentionOutput, RusotoError<GetObjectRetentionError>>,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_object_tagging(
-        &self,
+    fn get_object_tagging<'life0, 'async_trait>(
+        &'life0 self,
         input: GetObjectTaggingRequest,
-    ) -> RusotoFuture<GetObjectTaggingOutput, GetObjectTaggingError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<GetObjectTaggingOutput, RusotoError<GetObjectTaggingError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_object_torrent(
-        &self,
+    fn get_object_torrent<'life0, 'async_trait>(
+        &'life0 self,
         input: GetObjectTorrentRequest,
-    ) -> RusotoFuture<GetObjectTorrentOutput, GetObjectTorrentError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<GetObjectTorrentOutput, RusotoError<GetObjectTorrentError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn get_public_access_block(
-        &self,
+    fn get_public_access_block<'life0, 'async_trait>(
+        &'life0 self,
         input: GetPublicAccessBlockRequest,
-    ) -> RusotoFuture<GetPublicAccessBlockOutput, GetPublicAccessBlockError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        GetPublicAccessBlockOutput,
+                        RusotoError<GetPublicAccessBlockError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn head_bucket(&self, input: HeadBucketRequest) -> RusotoFuture<(), HeadBucketError> {
+    fn head_bucket<'life0, 'async_trait>(
+        &'life0 self,
+        input: HeadBucketRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<(), RusotoError<HeadBucketError>>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn head_object(
-        &self,
+    fn head_object<'life0, 'async_trait>(
+        &'life0 self,
         input: HeadObjectRequest,
-    ) -> RusotoFuture<HeadObjectOutput, HeadObjectError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<HeadObjectOutput, RusotoError<HeadObjectError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn list_bucket_analytics_configurations(
-        &self,
+    fn list_bucket_analytics_configurations<'life0, 'async_trait>(
+        &'life0 self,
         input: ListBucketAnalyticsConfigurationsRequest,
-    ) -> RusotoFuture<ListBucketAnalyticsConfigurationsOutput, ListBucketAnalyticsConfigurationsError>
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        ListBucketAnalyticsConfigurationsOutput,
+                        RusotoError<ListBucketAnalyticsConfigurationsError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
     {
         unimplemented!()
     }
-
-    fn list_bucket_inventory_configurations(
-        &self,
+    fn list_bucket_inventory_configurations<'life0, 'async_trait>(
+        &'life0 self,
         input: ListBucketInventoryConfigurationsRequest,
-    ) -> RusotoFuture<ListBucketInventoryConfigurationsOutput, ListBucketInventoryConfigurationsError>
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        ListBucketInventoryConfigurationsOutput,
+                        RusotoError<ListBucketInventoryConfigurationsError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
     {
         unimplemented!()
     }
-
-    fn list_bucket_metrics_configurations(
-        &self,
+    fn list_bucket_metrics_configurations<'life0, 'async_trait>(
+        &'life0 self,
         input: ListBucketMetricsConfigurationsRequest,
-    ) -> RusotoFuture<ListBucketMetricsConfigurationsOutput, ListBucketMetricsConfigurationsError>
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        ListBucketMetricsConfigurationsOutput,
+                        RusotoError<ListBucketMetricsConfigurationsError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
     {
         unimplemented!()
     }
-
-    fn list_buckets(&self) -> RusotoFuture<ListBucketsOutput, ListBucketsError> {
+    fn list_buckets<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<ListBucketsOutput, RusotoError<ListBucketsError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn list_multipart_uploads(
-        &self,
+    fn list_multipart_uploads<'life0, 'async_trait>(
+        &'life0 self,
         input: ListMultipartUploadsRequest,
-    ) -> RusotoFuture<ListMultipartUploadsOutput, ListMultipartUploadsError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        ListMultipartUploadsOutput,
+                        RusotoError<ListMultipartUploadsError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn list_object_versions(
-        &self,
+    fn list_object_versions<'life0, 'async_trait>(
+        &'life0 self,
         input: ListObjectVersionsRequest,
-    ) -> RusotoFuture<ListObjectVersionsOutput, ListObjectVersionsError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<ListObjectVersionsOutput, RusotoError<ListObjectVersionsError>>,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn list_objects(
-        &self,
+    fn list_objects<'life0, 'async_trait>(
+        &'life0 self,
         input: ListObjectsRequest,
-    ) -> RusotoFuture<ListObjectsOutput, ListObjectsError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<ListObjectsOutput, RusotoError<ListObjectsError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn list_objects_v2(
-        &self,
+    fn list_objects_v2<'life0, 'async_trait>(
+        &'life0 self,
         input: ListObjectsV2Request,
-    ) -> RusotoFuture<ListObjectsV2Output, ListObjectsV2Error> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<ListObjectsV2Output, RusotoError<ListObjectsV2Error>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn list_parts(&self, input: ListPartsRequest) -> RusotoFuture<ListPartsOutput, ListPartsError> {
+    fn list_parts<'life0, 'async_trait>(
+        &'life0 self,
+        input: ListPartsRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<ListPartsOutput, RusotoError<ListPartsError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_accelerate_configuration(
-        &self,
+    fn put_bucket_accelerate_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketAccelerateConfigurationRequest,
-    ) -> RusotoFuture<(), PutBucketAccelerateConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketAccelerateConfigurationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_acl(&self, input: PutBucketAclRequest) -> RusotoFuture<(), PutBucketAclError> {
+    fn put_bucket_acl<'life0, 'async_trait>(
+        &'life0 self,
+        input: PutBucketAclRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<(), RusotoError<PutBucketAclError>>> + Send + 'async_trait>,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_analytics_configuration(
-        &self,
+    fn put_bucket_analytics_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketAnalyticsConfigurationRequest,
-    ) -> RusotoFuture<(), PutBucketAnalyticsConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketAnalyticsConfigurationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_cors(&self, input: PutBucketCorsRequest) -> RusotoFuture<(), PutBucketCorsError> {
+    fn put_bucket_cors<'life0, 'async_trait>(
+        &'life0 self,
+        input: PutBucketCorsRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<(), RusotoError<PutBucketCorsError>>> + Send + 'async_trait>,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_encryption(
-        &self,
+    fn put_bucket_encryption<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketEncryptionRequest,
-    ) -> RusotoFuture<(), PutBucketEncryptionError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketEncryptionError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_inventory_configuration(
-        &self,
+    fn put_bucket_inventory_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketInventoryConfigurationRequest,
-    ) -> RusotoFuture<(), PutBucketInventoryConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketInventoryConfigurationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_lifecycle(
-        &self,
+    fn put_bucket_lifecycle<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketLifecycleRequest,
-    ) -> RusotoFuture<(), PutBucketLifecycleError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketLifecycleError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_lifecycle_configuration(
-        &self,
+    fn put_bucket_lifecycle_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketLifecycleConfigurationRequest,
-    ) -> RusotoFuture<(), PutBucketLifecycleConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketLifecycleConfigurationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_logging(
-        &self,
+    fn put_bucket_logging<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketLoggingRequest,
-    ) -> RusotoFuture<(), PutBucketLoggingError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketLoggingError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_metrics_configuration(
-        &self,
+    fn put_bucket_metrics_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketMetricsConfigurationRequest,
-    ) -> RusotoFuture<(), PutBucketMetricsConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketMetricsConfigurationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_notification(
-        &self,
+    fn put_bucket_notification<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketNotificationRequest,
-    ) -> RusotoFuture<(), PutBucketNotificationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketNotificationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_notification_configuration(
-        &self,
+    fn put_bucket_notification_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketNotificationConfigurationRequest,
-    ) -> RusotoFuture<(), PutBucketNotificationConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketNotificationConfigurationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_policy(
-        &self,
+    fn put_bucket_policy<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketPolicyRequest,
-    ) -> RusotoFuture<(), PutBucketPolicyError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketPolicyError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_replication(
-        &self,
+    fn put_bucket_replication<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketReplicationRequest,
-    ) -> RusotoFuture<(), PutBucketReplicationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketReplicationError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_request_payment(
-        &self,
+    fn put_bucket_request_payment<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketRequestPaymentRequest,
-    ) -> RusotoFuture<(), PutBucketRequestPaymentError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketRequestPaymentError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_tagging(
-        &self,
+    fn put_bucket_tagging<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketTaggingRequest,
-    ) -> RusotoFuture<(), PutBucketTaggingError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketTaggingError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_versioning(
-        &self,
+    fn put_bucket_versioning<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketVersioningRequest,
-    ) -> RusotoFuture<(), PutBucketVersioningError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketVersioningError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_bucket_website(
-        &self,
+    fn put_bucket_website<'life0, 'async_trait>(
+        &'life0 self,
         input: PutBucketWebsiteRequest,
-    ) -> RusotoFuture<(), PutBucketWebsiteError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutBucketWebsiteError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_object(&self, input: PutObjectRequest) -> RusotoFuture<PutObjectOutput, PutObjectError> {
+    fn put_object<'life0, 'async_trait>(
+        &'life0 self,
+        input: PutObjectRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<PutObjectOutput, RusotoError<PutObjectError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_object_acl(
-        &self,
+    fn put_object_acl<'life0, 'async_trait>(
+        &'life0 self,
         input: PutObjectAclRequest,
-    ) -> RusotoFuture<PutObjectAclOutput, PutObjectAclError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<PutObjectAclOutput, RusotoError<PutObjectAclError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_object_legal_hold(
-        &self,
+    fn put_object_legal_hold<'life0, 'async_trait>(
+        &'life0 self,
         input: PutObjectLegalHoldRequest,
-    ) -> RusotoFuture<PutObjectLegalHoldOutput, PutObjectLegalHoldError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<PutObjectLegalHoldOutput, RusotoError<PutObjectLegalHoldError>>,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_object_lock_configuration(
-        &self,
+    fn put_object_lock_configuration<'life0, 'async_trait>(
+        &'life0 self,
         input: PutObjectLockConfigurationRequest,
-    ) -> RusotoFuture<PutObjectLockConfigurationOutput, PutObjectLockConfigurationError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        PutObjectLockConfigurationOutput,
+                        RusotoError<PutObjectLockConfigurationError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_object_retention(
-        &self,
+    fn put_object_retention<'life0, 'async_trait>(
+        &'life0 self,
         input: PutObjectRetentionRequest,
-    ) -> RusotoFuture<PutObjectRetentionOutput, PutObjectRetentionError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<PutObjectRetentionOutput, RusotoError<PutObjectRetentionError>>,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_object_tagging(
-        &self,
+    fn put_object_tagging<'life0, 'async_trait>(
+        &'life0 self,
         input: PutObjectTaggingRequest,
-    ) -> RusotoFuture<PutObjectTaggingOutput, PutObjectTaggingError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<PutObjectTaggingOutput, RusotoError<PutObjectTaggingError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn put_public_access_block(
-        &self,
+    fn put_public_access_block<'life0, 'async_trait>(
+        &'life0 self,
         input: PutPublicAccessBlockRequest,
-    ) -> RusotoFuture<(), PutPublicAccessBlockError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RusotoError<PutPublicAccessBlockError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn restore_object(
-        &self,
+    fn restore_object<'life0, 'async_trait>(
+        &'life0 self,
         input: RestoreObjectRequest,
-    ) -> RusotoFuture<RestoreObjectOutput, RestoreObjectError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<RestoreObjectOutput, RusotoError<RestoreObjectError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn select_object_content(
-        &self,
+    fn select_object_content<'life0, 'async_trait>(
+        &'life0 self,
         input: SelectObjectContentRequest,
-    ) -> RusotoFuture<SelectObjectContentOutput, SelectObjectContentError> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        SelectObjectContentOutput,
+                        RusotoError<SelectObjectContentError>,
+                    >,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn upload_part(
-        &self,
+    fn upload_part<'life0, 'async_trait>(
+        &'life0 self,
         input: UploadPartRequest,
-    ) -> RusotoFuture<UploadPartOutput, UploadPartError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<UploadPartOutput, RusotoError<UploadPartError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
-
-    fn upload_part_copy(
-        &self,
+    fn upload_part_copy<'life0, 'async_trait>(
+        &'life0 self,
         input: UploadPartCopyRequest,
-    ) -> RusotoFuture<UploadPartCopyOutput, UploadPartCopyError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<UploadPartCopyOutput, RusotoError<UploadPartCopyError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         unimplemented!()
     }
 }
@@ -860,20 +1746,32 @@ impl S3MockRetry {
 }
 #[trait_impl]
 impl S3WithDefaults for S3MockRetry {
-    fn put_object(
-        &self,
+    fn put_object<'life0, 'async_trait>(
+        &'life0 self,
         _input: PutObjectRequest,
-    ) -> RusotoFuture<PutObjectOutput, PutObjectError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<PutObjectOutput, RusotoError<PutObjectError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         let curr_fails = *self.fails.lock().unwrap();
         if curr_fails == self.max_fails {
             // succeed
-            RusotoFuture::from_future(Ok(PutObjectOutput::default()))
+            Box::pin(async move { Ok(PutObjectOutput::default()) })
         } else {
             // fail
             *self.fails.lock().unwrap() += 1;
-            RusotoFuture::from_future(Err(RusotoError::HttpDispatch(
-                request::HttpDispatchError::new("timeout".into()),
-            )))
+            Box::pin(async move {
+                Err(RusotoError::HttpDispatch(request::HttpDispatchError::new(
+                    "timeout".into(),
+                )))
+            })
         }
     }
 }
@@ -897,24 +1795,33 @@ impl S3MockTimeout {
 }
 #[trait_impl]
 impl S3WithDefaults for S3MockTimeout {
-    fn put_object(
-        &self,
+    fn put_object<'life0, 'async_trait>(
+        &'life0 self,
         _input: PutObjectRequest,
-    ) -> RusotoFuture<PutObjectOutput, PutObjectError> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<PutObjectOutput, RusotoError<PutObjectError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
         let curr_fails = *self.fails.lock().unwrap();
         if curr_fails == self.max_fails {
             // succeed
-            RusotoFuture::from_future(Ok(PutObjectOutput::default()))
+            Box::pin(async move { Ok(PutObjectOutput::default()) })
         } else {
             // fail
             *self.fails.lock().unwrap() += 1;
-            RusotoFuture::from_future(
-                Compat::new(ok::<_, u8>(delay_for(Duration::from_secs(10)))
-                    .map_ok(|_| PutObjectOutput::default())
-                    .map_err(|_| {
-                        RusotoError::HttpDispatch(request::HttpDispatchError::new("timeout".into()))
-                    }))
-            )
+            Box::pin(async move {
+                delay_for(Duration::from_secs(10)).await;
+                Err(RusotoError::HttpDispatch(request::HttpDispatchError::new(
+                    "timeout".into(),
+                )))
+            })
         }
     }
 }
