@@ -5,7 +5,6 @@ use multi_default_trait_impl::{default_trait_impl, trait_impl};
 use rand::Rng;
 use rusoto_core::*;
 use std::{
-    io::Read,
     path::Path,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -47,8 +46,8 @@ fn rand_string(n: usize) -> String {
         .collect::<String>()
 }
 
-#[test]
-fn s3_upload_files_seq_count() {
+#[tokio::test]
+async fn s3_upload_files_seq_count() {
     const N_FILES: usize = 100;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
     let folder = tmp_dir.path().join("folder");
@@ -62,7 +61,7 @@ fn s3_upload_files_seq_count() {
     let cli = S3MockRetry::new(2);
 
     let counter = Mutex::new(0);
-    let future = s3_upload_files(
+    s3_upload_files(
         cli,
         "any-bucket".into(),
         all_file_paths!(folder),
@@ -75,14 +74,13 @@ fn s3_upload_files_seq_count() {
             ok(())
         },
         PutObjectRequest::default,
-    );
-
-    let mut runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(future).unwrap();
+    )
+    .await
+    .unwrap();
 }
 
-#[test]
-fn s3_upload_file_attempts_count() {
+#[tokio::test]
+async fn s3_upload_file_attempts_count() {
     let timeout = Arc::new(Mutex::new(TimeoutState));
 
     const ATTEMPTS: usize = 4;
@@ -93,7 +91,7 @@ fn s3_upload_file_attempts_count() {
 
     let cli = S3MockRetry::new(ATTEMPTS - 1);
 
-    let future = s3_upload_file(
+    let result = s3_upload_file(
         cli,
         "any-bucket".into(),
         path,
@@ -101,10 +99,10 @@ fn s3_upload_file_attempts_count() {
         10,
         timeout,
         PutObjectRequest::default,
-    );
+    )
+    .await
+    .unwrap();
 
-    let mut runtime = tokio::runtime::Runtime::new().unwrap();
-    let result = runtime.block_on(future).unwrap();
     assert_eq!(result.attempts, ATTEMPTS);
 }
 
@@ -162,75 +160,29 @@ async fn test_s3_upload_files() {
 // fn test_s3_delete_files
 // - and make it delete enough files to trigger paging
 
-/* TODO https://github.com/rusoto/rusoto/issues/1546
-#[test]
-fn test_s3_upload_file_timeout() {
-    let dir = tempdir::TempDir::new("testing").unwrap();
-    let path = dir.path().join("file.txt");
-    std::fs::write(&path, "file contents");
-
-    let timeout = Arc::new(Mutex::new(TimeoutState::new(UploadConfig {
-        timeout_fraction: 1.0,
-        backoff: 1.0,
-        n_retries: 8,
-        expected_upload_speed: 1.0,
-        avg_power: 0.7,
-        avg_min_bytes: 1_000_000,
-        min_timeout: 0.5,
-    })));
-
-    let cli = S3MockTimeout::new(1);
-    let future = s3_upload_file(
-        cli.clone(),
-        String::new(),
-        path,
-        String::new(),
-        true,
-        1,
-        timeout.clone());
-
-    let mut runtime = tokio::runtime::Runtime::new().unwrap();
-    let result = runtime.block_on(future).unwrap();
-    println!("{:?}", result);
-}
-
-#[test]
-fn test_rusoto_timeout() {
+#[tokio::test]
+async fn test_s3_upload_file_timeout() {
+    // TODO (not sure yet exactly what it's supposed to test)
+    // it simulates some timeout anyway
     let dir = tempdir::TempDir::new("testing").unwrap();
     let path = dir.path().join("file.txt");
     std::fs::write(&path, "file contents").unwrap();
 
-    let s3 = S3MockTimeout::new(1);
+    let timeout = Arc::new(Mutex::new(TimeoutState));
+    let cli = S3MockTimeout::new(1);
+    let result = s3_upload_file(
+        cli.clone(),
+        "testing".into(),
+        path,
+        "hey".into(),
+        20,
+        timeout,
+        || PutObjectRequest::default(),
+    )
+    .await;
 
-
-    let future =
-    tokio::fs::File::open(path.clone())
-        .and_then(|file| file.metadata())
-        .and_then(|(file, metadata)| {
-            // Create stream - we need `len` (size of file) further down the stream in the
-            // S3 put_object request
-            let len = metadata.len();
-            Ok((FramedRead::new(file, BytesCodec::new()).map(BytesMut::freeze), len))
-        })
-        .map_err(|e| format!("Cannot read file: {}", e))
-        .and_then(move |(stream, len)|
-            s3.put_object(PutObjectRequest {
-                bucket: String::new(),
-                key: String::new(),
-                body: Some(ByteStream::new(stream)),
-                content_length: Some(len as i64),
-                .. Default::default()})
-                .with_timeout(Duration::from_millis(500))
-                .map_err(move |e| format!("Error in put_object: {}", e))
-                .map(move |_| len)
-            );
-
-    let start = Instant::now();
-    let mut runtime = tokio::runtime::Runtime::new().unwrap();
-    let result = runtime.block_on(future).unwrap();
-    println!("Completed in {:?}", Instant::now() - start);
+    println!("{:?}", result.unwrap());
 }
-*/
 
 // Just to be able to easily create mock objects, we create a temporary trait with defaults that
 // panic
@@ -1810,6 +1762,7 @@ impl S3WithDefaults for S3MockTimeout {
         Self: 'async_trait,
     {
         let curr_fails = *self.fails.lock().unwrap();
+        println!("Curr fails: {}", curr_fails);
         if curr_fails == self.max_fails {
             // succeed
             Box::pin(async move { Ok(PutObjectOutput::default()) })
@@ -1818,6 +1771,7 @@ impl S3WithDefaults for S3MockTimeout {
             *self.fails.lock().unwrap() += 1;
             Box::pin(async move {
                 delay_for(Duration::from_secs(10)).await;
+                println!("Delay for 10 sec?");
                 Err(RusotoError::HttpDispatch(request::HttpDispatchError::new(
                     "timeout".into(),
                 )))
