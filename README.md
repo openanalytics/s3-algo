@@ -72,5 +72,3 @@ Tests assume that a credentials profile exists - for example in `~/.aws/credenti
 aws_access_key_id = 123456789
 aws_secret_access_key = 123456789
 ```
-
-After 
