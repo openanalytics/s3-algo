@@ -155,12 +155,11 @@ where
                         ok(FramedRead::new(file, BytesCodec::new())
                             .map_ok(bytes::BytesMut::freeze))
                         .try_flatten_stream();
-                    // ^ TODO how to remove the ok()?
 
                     let (est, timeout_value) = {
                         let t = timeout.lock().unwrap();
                         (t.get_estimate(), t.get_timeout(len, attempts1))
-                    }; // TODO simplify this back
+                    };
                     tokio::time::timeout(
                         timeout_value,
                         s3.put_object(PutObjectRequest {
