@@ -3,7 +3,7 @@
 //!
 //! https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html
 //!
-//! Per now, uploading multiple files has been the main focus.
+//! Until now, uploading multiple files has been the main focus.
 //! Deletion of prefix is also implemented.
 //! Listing of files is planned.
 //!
@@ -35,12 +35,12 @@ use tokio::time::delay_for;
 use tokio_util::codec::{BytesCodec, FramedRead};
 
 mod config;
+mod copy;
 mod delete;
 mod err;
-mod upload;
 
+pub use copy::*;
 pub use delete::*;
-pub use upload::*;
 pub mod timeout;
 pub use config::UploadConfig;
 pub use err::*;

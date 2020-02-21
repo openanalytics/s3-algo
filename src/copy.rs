@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Clone, Debug)]
+pub enum Uri {
+    Local { path: PathBuf },
+    Remote { bucket: String, key: String },
+}
+
 /// Upload multiple files to S3.
 ///
 /// `path_to_key` is a function that converts a file path to the key it should have in S3.
@@ -45,11 +51,13 @@ where
         let state = timeout_state.clone();
         let key = path_to_key(path.as_ref()).to_string_lossy().to_string();
 
-        s3_upload_file(
+        s3_copy_file(
             s3.clone(),
-            bucket.clone(),
-            path,
-            key,
+            Uri::Local { path },
+            Uri::Remote {
+                bucket: bucket.clone(),
+                key,
+            },
             n_retries,
             state,
             default_request.clone(),
@@ -97,11 +105,11 @@ pub struct UploadFileResult {
     pub est: f64,
 }
 
-pub(crate) async fn s3_upload_file<C, T, R>(
+/// General function to upload or download a file, or copy a file between S3 locations
+pub(crate) async fn s3_copy_file<C, T, R>(
     s3: C,
-    bucket: String,
-    path: PathBuf,
-    key: String,
+    src: Uri,
+    dest: Uri,
     n_retries: usize,
     timeout: Arc<Mutex<T>>,
     default_request: R,
@@ -111,6 +119,9 @@ where
     T: Timeout + Send + Sync,
     R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
 {
+    if let (&Uri::Local { .. }, &Uri::Local { .. }) = (&src, &dest) {
+        return Err(Error::LocalToLocal);
+    }
     let timeout1 = timeout.clone();
     let timeout2 = timeout;
     let mut attempts1 = 0;
@@ -122,15 +133,20 @@ where
             move || {
                 attempts1 += 1;
                 // variables captures are owned by this closure, but clones need be sent to further nested closures
-                try_stopwatch(stream_to_s3(
-                    s3.clone(),
-                    path.clone(),
-                    bucket.clone(),
-                    key.clone(),
-                    timeout1.clone(),
-                    attempts1,
-                    default_request.clone(),
-                ))
+                try_stopwatch(match (src.clone(), dest.clone()) {
+                    (Uri::Local { path }, Uri::Remote { bucket, key }) => stream_to_s3(
+                        s3.clone(),
+                        path.clone(),
+                        bucket.clone(),
+                        key.clone(),
+                        timeout1.clone(),
+                        attempts1,
+                        default_request.clone(),
+                    ),
+                    (Uri::Remote { .. }, Uri::Local { .. }) => unimplemented!("download"),
+                    (Uri::Remote { .. }, Uri::Remote { .. }) => unimplemented!("copy"),
+                    _ => unreachable!(),
+                })
                 .boxed() // to avoid too big type length while compiling...
             },
             // retry function

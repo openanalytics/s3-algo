@@ -31,4 +31,6 @@ pub enum Error {
     ListObjectsV2 { source: ListObjectsV2Error },
     #[snafu(display("Error deleting objects in S3: {:?}", source))]
     DeleteObjects { source: DeleteObjectsError },
+    #[snafu(display("Copying from local file to local file is not supported"))]
+    LocalToLocal,
 }

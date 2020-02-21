@@ -91,11 +91,13 @@ async fn s3_upload_file_attempts_count() {
 
     let cli = S3MockRetry::new(ATTEMPTS - 1);
 
-    let result = s3_upload_file(
+    let result = s3_copy_file(
         cli,
-        "any-bucket".into(),
-        path,
-        "any-key".into(),
+        Uri::Local { path },
+        Uri::Remote {
+            bucket: "any-bucket".into(),
+            key: "any-key".into(),
+        },
         10,
         timeout,
         PutObjectRequest::default,
@@ -170,11 +172,13 @@ async fn test_s3_upload_file_timeout() {
 
     let timeout = Arc::new(Mutex::new(TimeoutState));
     let cli = S3MockTimeout::new(1);
-    let result = s3_upload_file(
+    let result = s3_copy_file(
         cli.clone(),
-        "testing".into(),
-        path,
-        "hey".into(),
+        Uri::Local { path },
+        Uri::Remote {
+            bucket: "testing".into(),
+            key: "hey".into(),
+        },
         20,
         timeout,
         || PutObjectRequest::default(),
