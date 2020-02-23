@@ -50,17 +50,23 @@ where
     let jobs = files.map(move |path| {
         let state = timeout_state.clone();
         let key = path_to_key(path.as_ref()).to_string_lossy().to_string();
+        let default = default_request.clone();
+        let bucket = bucket.clone();
+        let s3 = s3.clone();
 
-        s3_copy_file(
-            s3.clone(),
-            Uri::Local { path },
-            Uri::Remote {
-                bucket: bucket.clone(),
-                key,
+        s3_request(
+            move |attempts| {
+                stream_to_s3(
+                    s3.clone(),
+                    path.clone(),
+                    bucket.clone(),
+                    key.clone(),
+                    state.clone(),
+                    attempts,
+                    default.clone(),
+                )
             },
             n_retries,
-            state,
-            default_request.clone(),
         )
     });
 
@@ -74,11 +80,17 @@ where
         })
         .buffer_unordered(copy_parallelization)
         .zip(stream::iter(0..))
-        .map(|(result, i): (Result<UploadFileResult, Error>, usize)| {
-            result.map(|result| (i, result))
-        })
-        .try_for_each(|(i, mut result)| {
-            result.seq = i;
+        .map(|(result, i)| result.map(|result| (i, result)))
+        .try_for_each(|(i, result)| {
+            let ((est, bytes), total_time, success_time, attempts) = result;
+            let result = UploadFileResult {
+                seq: i,
+                bytes,
+                total_time,
+                success_time,
+                attempts,
+                est,
+            };
             progress(result)
         })
         .then(move |x| async move {
@@ -105,25 +117,16 @@ pub struct UploadFileResult {
     pub est: f64,
 }
 
-/// General function to upload or download a file, or copy a file between S3 locations
-pub(crate) async fn s3_copy_file<C, T, R>(
-    s3: C,
-    src: Uri,
-    dest: Uri,
+/// The future factory takes one argument: number of attempts so far.
+/// `s3_request` returns (T, total_time, success_time, attempts).
+pub(crate) async fn s3_request<T, F, R>(
+    future_factory: F,
     n_retries: usize,
-    timeout: Arc<Mutex<T>>,
-    default_request: R,
-) -> Result<UploadFileResult, Error>
+) -> Result<(T, Duration, Duration, usize), Error>
 where
-    C: S3 + Clone + Send + Unpin + Sync,
-    T: Timeout + Send + Sync,
-    R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
+    F: Fn(usize) -> R + Unpin,
+    R: Future<Output = Result<T, Error>> + Send,
 {
-    if let (&Uri::Local { .. }, &Uri::Local { .. }) = (&src, &dest) {
-        return Err(Error::LocalToLocal);
-    }
-    let timeout1 = timeout.clone();
-    let timeout2 = timeout;
     let mut attempts1 = 0;
     let mut attempts2 = 0;
     try_stopwatch(
@@ -133,21 +136,7 @@ where
             move || {
                 attempts1 += 1;
                 // variables captures are owned by this closure, but clones need be sent to further nested closures
-                try_stopwatch(match (src.clone(), dest.clone()) {
-                    (Uri::Local { path }, Uri::Remote { bucket, key }) => stream_to_s3(
-                        s3.clone(),
-                        path.clone(),
-                        bucket.clone(),
-                        key.clone(),
-                        timeout1.clone(),
-                        attempts1,
-                        default_request.clone(),
-                    ),
-                    (Uri::Remote { .. }, Uri::Local { .. }) => unimplemented!("download"),
-                    (Uri::Remote { .. }, Uri::Remote { .. }) => unimplemented!("copy"),
-                    _ => unreachable!(),
-                })
-                .boxed() // to avoid too big type length while compiling...
+                try_stopwatch(future_factory(attempts1)).boxed() // to avoid too big type length while compiling...
             },
             // retry function
             {
@@ -163,26 +152,14 @@ where
         ),
     )
     .await
-    .map(
-        move |((((est, bytes), success_time), attempts), total_time)| {
-            // Results from this upload are in - update the timeout state
-            let res = UploadFileResult {
-                seq: 0, // will be set by the caller (s3_upload_files)!
-                bytes,
-                total_time,
-                success_time,
-                attempts,
-                est,
-            };
-            timeout2.lock().unwrap().update(&res);
-            res
-        },
-    )
+    .map(move |(((result, success_time), attempts), total_time)| {
+        (result, total_time, success_time, attempts)
+    })
     .map_err(|(err, _attempts)| err)
 }
 
 /// returns (current estimate, number of bytes uploaded)
-async fn stream_to_s3<T, C, R>(
+pub(crate) async fn stream_to_s3<T, C, R>(
     s3: C,
     path: PathBuf,
     bucket: String,
@@ -196,7 +173,6 @@ where
     T: Timeout + Send + Sync,
     R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
 {
-    // Time each retry - we will thus only get the time of the last, successful result (if any)
     let file = tokio::fs::File::open(path.clone()).await.with_context({
         let path = path.clone();
         move || err::Io {
@@ -209,11 +185,8 @@ where
             description: path.display().to_string(),
         }
     })?;
-    // Create stream - we need `len` (size of file) further down the stream in the
-    // S3 put_object request
-    let len = metadata.len();
 
-    // let a : String =ok(FramedRead::new(file, BytesCodec::new()).map_ok(BytesMut::freeze));
+    let len = metadata.len();
 
     let stream = ok(FramedRead::new(file, BytesCodec::new()).map_ok(bytes::BytesMut::freeze))
         .try_flatten_stream();

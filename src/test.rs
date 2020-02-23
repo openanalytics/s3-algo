@@ -91,21 +91,24 @@ async fn s3_upload_file_attempts_count() {
 
     let cli = S3MockRetry::new(ATTEMPTS - 1);
 
-    let result = s3_copy_file(
-        cli,
-        Uri::Local { path },
-        Uri::Remote {
-            bucket: "any-bucket".into(),
-            key: "any-key".into(),
+    let result = s3_request(
+        |attempts| {
+            stream_to_s3(
+                cli.clone(),
+                path.clone(),
+                "any_bucket".into(),
+                "any-key".into(),
+                timeout.clone(),
+                attempts,
+                PutObjectRequest::default,
+            )
         },
         10,
-        timeout,
-        PutObjectRequest::default,
     )
     .await
     .unwrap();
 
-    assert_eq!(result.attempts, ATTEMPTS);
+    assert_eq!(result.3, ATTEMPTS);
 }
 
 #[tokio::test]
@@ -172,16 +175,19 @@ async fn test_s3_upload_file_timeout() {
 
     let timeout = Arc::new(Mutex::new(TimeoutState));
     let cli = S3MockTimeout::new(1);
-    let result = s3_copy_file(
-        cli.clone(),
-        Uri::Local { path },
-        Uri::Remote {
-            bucket: "testing".into(),
-            key: "hey".into(),
+    let result = s3_request(
+        |attempts| {
+            stream_to_s3(
+                cli.clone(),
+                path.clone(),
+                "testing".into(),
+                "hey".into(),
+                timeout.clone(),
+                attempts,
+                PutObjectRequest::default,
+            )
         },
-        20,
-        timeout,
-        || PutObjectRequest::default(),
+        10,
     )
     .await;
 

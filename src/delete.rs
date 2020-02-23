@@ -30,7 +30,7 @@ pub fn s3_delete_prefix<C: S3 + Clone + Send + 'static>(
                 } else {
                     let result = s3
                         .list_objects_v2(ListObjectsV2Request {
-                            bucket: bucket,
+                            bucket,
                             prefix,
                             continuation_token: cont,
                             ..Default::default()
