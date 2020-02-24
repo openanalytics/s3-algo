@@ -64,8 +64,7 @@ async fn s3_upload_files_seq_count() {
     s3_upload_files(
         cli,
         "any-bucket".into(),
-        all_file_paths!(folder),
-        |_| "any key really".into(),
+        files_recursive(folder, PathBuf::new()),
         UploadConfig::default(),
         move |res| {
             let mut counter = counter.lock().unwrap();
@@ -91,24 +90,19 @@ async fn s3_upload_file_attempts_count() {
 
     let cli = S3MockRetry::new(ATTEMPTS - 1);
 
-    let result = s3_request(
-        |attempts| {
-            stream_file_to_s3(
-                cli.clone(),
-                path.clone(),
-                "any_bucket".into(),
-                "any-key".into(),
-                timeout.clone(),
-                attempts,
-                PutObjectRequest::default,
-            )
+    let result = s3_upload_files(
+        cli,
+        "any_bucket".into(),
+        files_recursive(path, PathBuf::new()),
+        UploadConfig::default(),
+        |result| async move {
+            assert_eq!(result.attempts, ATTEMPTS);
+            Ok(())
         },
-        10,
-    )
+        PutObjectRequest::default
+        )
     .await
     .unwrap();
-
-    assert_eq!(result.3, ATTEMPTS);
 }
 
 #[tokio::test]
@@ -126,20 +120,19 @@ async fn test_s3_upload_files() {
         std::fs::write(dir.join(format!("img_{}.tif", i)), "file contents").unwrap();
     }
 
+    let s3 = testing_s3_client();
     println!("Upload {} to {:?} ", dir.display(), dir_key);
     s3_upload_files(
-        testing_s3_client(),
-        "test-bucket".to_string(),
-        all_file_paths!(dir),
-        strip_prefix(tmp_dir.path().to_owned()),
-        cfg,
-        |_res| ok(()),
-        PutObjectRequest::default,
+        s3.clone(),
+        "test-bucket".into(),
+        files_recursive(dir, dir.strip_prefix(tmp_dir).unwrap().to_owned()),
+        UploadConfig::default(),
+        |result| ok(()),
+        PutObjectRequest::default
     )
     .await
     .unwrap();
 
-    let s3 = testing_s3_client();
 
     // Check that all files are there
     for i in 0..N_FILES {
