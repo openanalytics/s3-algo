@@ -1,17 +1,14 @@
 use super::*;
 
-#[derive(Clone, Debug)]
-pub enum Uri {
-    Local { path: PathBuf },
-    Remote { bucket: String, key: String },
-}
-
 /// Upload multiple files to S3.
 ///
 /// `path_to_key` is a function that converts a file path to the key it should have in S3.
 /// The provided `strip_prefix` function should cover most use cases.
 ///
 /// `s3_upload_files` provides counting of uploaded files and bytes through the `progress` closure:
+///
+/// For common use cases it is adviced to use `files_recursive` as `files`.
+///
 /// `progress` will be called after the upload of each file, with some data about that upload.
 /// The first `usize` parameter is the number of this file in the upload, while [`UploadFileResult`](struct.UploadFileResult.html)
 /// holds more data such as size in bytes, and the duration of the upload. It is thus possible to
@@ -22,21 +19,19 @@ pub enum Uri {
 ///
 /// `default_request` constructs the default request struct - only the fields `bucket`, `key`,
 /// `body` and `content_length` are overwritten by the upload algorithm.
-pub async fn s3_upload_files<P, F, C, I, T, R>(
+pub async fn s3_upload_files<P, F1, C, I, R>(
     s3: C,
     bucket: String,
     files: I,
-    path_to_key: T,
     cfg: UploadConfig,
     progress: P,
     default_request: R,
 ) -> Result<(), Error>
 where
-    P: Fn(UploadFileResult) -> F,
-    F: Future<Output = Result<(), Error>>,
     C: S3 + Clone + Send + Sync + Unpin,
-    I: Iterator<Item = PathBuf>,
-    T: Fn(&Path) -> PathBuf,
+    P: Fn(UploadFileResult) -> F1,
+    F1: Future<Output = Result<(), Error>>,
+    I: Iterator<Item = ObjectSource>,
     R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
 {
     let extra_copy_time_s = cfg.extra_copy_time_s;
@@ -46,28 +41,17 @@ where
 
     let timeout_state = Arc::new(Mutex::new(TimeoutState::new(cfg)));
 
-    // Make an iterator over jobs - need to make a future which fails if dir_path does not exist
-    let jobs = files.map(move |path| {
-        let state = timeout_state.clone();
-        let key = path_to_key(path.as_ref()).to_string_lossy().to_string();
-        let default = default_request.clone();
-        let bucket = bucket.clone();
-        let s3 = s3.clone();
-
+    let jobs = files.map(move |src| {
+        let (default, bucket, s3) = (default_request.clone(), bucket.clone(), s3.clone());
         s3_request(
-            move |attempts| {
-                stream_file_to_s3(
-                    s3.clone(),
-                    path.clone(),
-                    bucket.clone(),
-                    key.clone(),
-                    state.clone(),
-                    attempts,
-                    default.clone(),
-                )
+            move || {
+                src.clone()
+                    .create_upload_future(s3.clone(), bucket.clone(), default.clone())
             },
             n_retries,
+            timeout_state.clone(),
         )
+        .boxed()
     });
 
     // Run jobs in parallel,
@@ -82,7 +66,7 @@ where
         .zip(stream::iter(0..))
         .map(|(result, i)| result.map(|result| (i, result)))
         .try_for_each(|(i, result)| {
-            let ((est, bytes), total_time, success_time, attempts) = result;
+            let (est, bytes, total_time, success_time, attempts) = result;
             let result = UploadFileResult {
                 seq: i,
                 bytes,
@@ -98,6 +82,102 @@ where
             x
         })
         .await
+}
+
+#[derive(Clone, Debug)]
+pub enum ObjectSource {
+    File { path: PathBuf, key: String },
+    Data { data: Vec<u8>, key: String },
+}
+impl ObjectSource {
+    pub async fn create_stream(&self) -> Result<(ByteStream, u64), Error> {
+        match self {
+            Self::File { path, .. } => {
+                let file = tokio::fs::File::open(path.clone()).await.with_context({
+                    let path = path.clone();
+                    move || err::Io {
+                        description: path.display().to_string(),
+                    }
+                })?;
+                let metadata = file.metadata().await.with_context({
+                    let path = path.clone();
+                    move || err::Io {
+                        description: path.display().to_string(),
+                    }
+                })?;
+
+                let len = metadata.len();
+
+                Ok((
+                    ByteStream::new(
+                        ok(FramedRead::new(file, BytesCodec::new())
+                            .map_ok(bytes::BytesMut::freeze))
+                        .try_flatten_stream(),
+                    ),
+                    len,
+                ))
+            }
+            Self::Data { data, .. } => Ok((data.clone().into(), data.len() as u64)),
+        }
+    }
+    pub async fn create_upload_future<C, R>(
+        self,
+        s3: C,
+        bucket: String,
+        default: R,
+    ) -> Result<(impl Future<Output = Result<(), Error>>, u64), Error>
+    where
+        C: S3 + Clone,
+        R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
+    {
+        let (stream, len) = self.create_stream().await?;
+        let key = self.get_key().to_owned();
+        let (s3, bucket, default) = (s3.clone(), bucket.clone(), default.clone());
+        let future = async move {
+            s3.put_object(PutObjectRequest {
+                bucket: bucket.clone(),
+                key: key.clone(),
+                body: Some(ByteStream::new(stream)),
+                content_length: Some(len as i64),
+                ..default()
+            })
+            .with_context(move || err::PutObject { key })
+            .await
+            .map(drop)
+        };
+        Ok((future, len))
+    }
+    pub fn get_key(&self) -> &str {
+        match self {
+            Self::File { key, .. } => &key,
+            Self::Data { key, .. } => &key,
+        }
+    }
+}
+
+pub fn files_recursive(
+    src_dir: PathBuf,
+    key_prefix: PathBuf,
+) -> impl Iterator<Item = ObjectSource> {
+    walkdir::WalkDir::new(&src_dir)
+        .into_iter()
+        .filter_map(move |entry| {
+            let src_dir = src_dir.clone();
+            let key_prefix = key_prefix.clone();
+            entry.ok().and_then(move |entry| {
+                if entry.file_type().is_file() {
+                    let path = entry.path().to_owned();
+                    let key_suffix = path.strip_prefix(&src_dir).unwrap().to_path_buf();
+                    let key = key_prefix.join(&key_suffix);
+                    Some(ObjectSource::File {
+                        path,
+                        key: key.to_string_lossy().to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+        })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -117,96 +197,18 @@ pub struct UploadFileResult {
     pub est: f64,
 }
 
-/// The future factory takes one argument: number of attempts so far.
-/// `s3_request` returns (T, total_time, success_time, attempts).
-pub(crate) async fn s3_request<T, F, R>(
-    future_factory: F,
-    n_retries: usize,
-) -> Result<(T, Duration, Duration, usize), Error>
-where
-    F: Fn(usize) -> R + Unpin,
-    R: Future<Output = Result<T, Error>> + Send,
-{
-    let mut attempts1 = 0;
-    let mut attempts2 = 0;
-    try_stopwatch(
-        // Time the entire file upload (across all retries)
-        FutureRetry::new(
-            // Future factory - creates a future that reads file while uploading it
-            move || {
-                attempts1 += 1;
-                // variables captures are owned by this closure, but clones need be sent to further nested closures
-                try_stopwatch(future_factory(attempts1)).boxed() // to avoid too big type length while compiling...
-            },
-            // retry function
-            {
-                move |e| {
-                    attempts2 += 1;
-                    if attempts2 > n_retries {
-                        RetryPolicy::ForwardError(e)
-                    } else {
-                        RetryPolicy::WaitRetry(Duration::from_millis(200)) //  TODO adjust the time, maybe depending on retries
-                    }
-                }
-            },
-        ),
-    )
-    .await
-    .map(move |(((result, success_time), attempts), total_time)| {
-        (result, total_time, success_time, attempts)
-    })
-    .map_err(|(err, _attempts)| err)
-}
-
-/// returns (current estimate, number of bytes uploaded)
-pub(crate) async fn stream_file_to_s3<T, C, R>(
-    s3: C,
-    path: PathBuf,
-    bucket: String,
-    key: String,
-    timeout: Arc<Mutex<T>>,
-    attempts: usize,
-    default_req: R,
-) -> Result<(f64, u64), Error>
-where
-    C: S3 + Clone + Send + Unpin + Sync,
-    T: Timeout + Send + Sync,
-    R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
-{
-    let file = tokio::fs::File::open(path.clone()).await.with_context({
-        let path = path.clone();
-        move || err::Io {
-            description: path.display().to_string(),
+#[cfg(test)]
+mod test {
+    use super::*;
+    use tempdir::TempDir;
+    #[test]
+    fn test_files_recursive() {
+        let tmp_dir = TempDir::new("s3-testing").unwrap();
+        let dir = tmp_dir.path();
+        for i in 0..10 {
+            std::fs::write(dir.join(format!("img_{}.tif", i)), "file contents").unwrap();
         }
-    })?;
-    let metadata = file.metadata().await.with_context({
-        let path = path.clone();
-        move || err::Io {
-            description: path.display().to_string(),
-        }
-    })?;
-
-    let len = metadata.len();
-
-    let stream = ok(FramedRead::new(file, BytesCodec::new()).map_ok(bytes::BytesMut::freeze))
-        .try_flatten_stream();
-
-    let (est, timeout_value) = {
-        let t = timeout.lock().unwrap();
-        (t.get_estimate(), t.get_timeout(len, attempts))
-    };
-    tokio::time::timeout(
-        timeout_value,
-        s3.put_object(PutObjectRequest {
-            bucket: bucket.clone(),
-            key: key.clone(),
-            body: Some(ByteStream::new(stream)),
-            content_length: Some(len as i64),
-            ..default_req()
-        }),
-    )
-    .await
-    .with_context(|| err::Timeout {})
-    .and_then(move |result| result.with_context(move || err::PutObject { key }))
-    .map(move |_| (est, len))
+        let files = files_recursive(dir.to_owned(), PathBuf::new());
+        assert_eq!(files.count(), 10);
+    }
 }

@@ -6,21 +6,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-macro_rules! all_file_paths {
-    ($dir_path:expr $(, max_open = $max_open:expr)?) => {
-        walkdir::WalkDir::new(&$dir_path)
-            $(.max_open($max_open))?
-            .into_iter()
-            .filter_map(|entry|
-                entry.ok().and_then(|entry| {
-                    if entry.file_type().is_file() {
-                        Some(entry.path().to_owned())
-                    } else {
-                        None
-                    }
-                }))};
-}
-
 #[tokio::main]
 async fn main() {
     let mut app = App::new("Example 'perf_data'")
@@ -85,13 +70,11 @@ async fn benchmark_s3_upload(
         upload_perf_log_update(&mut std::io::stdout(), res);
         ok(())
     };
-    let files_to_upload = all_file_paths!(dir_path);
 
     s3_upload_files(
         s3,
         bucket,
-        files_to_upload,
-        move |path| PathBuf::from(&prefix).join(path.strip_prefix(&dir_path).unwrap()),
+        files_recursive(dir_path, PathBuf::from(&prefix)),
         cfg,
         progress,
         Default::default,

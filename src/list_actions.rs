@@ -1,5 +1,5 @@
 use super::*;
-use futures::future::ready;
+use futures::future::{ok, ready};
 use futures::stream::Stream;
 use rusoto_s3::ListObjectsV2Output;
 use std::future::Future;
@@ -46,6 +46,18 @@ where
                     .await
                 }
             })
+    }
+    /// Flatten into a stream of Objects.
+    /// WARNING: discards any error during listing
+    // pub fn flatten(self) -> impl TryStream<Ok = Object, Error = Error> {
+    pub fn flatten(self) -> impl Stream<Item = Result<Object, Error>> {
+        self.stream
+            .try_filter_map(|response| {
+                let r: Option<Vec<Object>> = response.contents;
+                ok(r)
+            })
+            .map_ok(|x| stream::iter(x).map(Ok))
+            .try_flatten()
     }
 
     /*
@@ -116,9 +128,49 @@ pub fn s3_list_objects<C: S3 + Clone + Send + Sync>(
 
 #[cfg(test)]
 mod test {
-    #[test]
-    fn test_delete_several_pages() {
-        use crate::s3_upload_files;
-        // Minio uses paging only per 10'000 objects
+    use super::*;
+    use crate::s3_upload_files;
+    use crate::test::rand_string;
+    #[tokio::test]
+    async fn test_s3_delete_files() {
+        // Minio does paging at 10'000 fles, so we need more than that.
+        // It means this test will take a minutes or two.
+        let s3 = testing_s3_client();
+        let dir = rand_string(14);
+        const N_FILES: usize = 11_000;
+        let files = (0..N_FILES).map(|i| ObjectSource::Data {
+            data: vec![1, 2, 3],
+            key: format!("{}/{}.file", dir, i),
+        });
+        s3_upload_files(
+            s3.clone(),
+            "test-bucket".into(),
+            files,
+            UploadConfig::default(),
+            |result| {
+                if result.seq % 100 == 0 {
+                    println!("{} files uploaded", result.seq);
+                }
+                ok(())
+            },
+            PutObjectRequest::default,
+        )
+        .await
+        .unwrap();
+
+        // Delete all
+        s3_list_objects(s3.clone(), "test-bucket".into(), String::new())
+            .delete_all()
+            .await
+            .unwrap();
+
+        // List
+        let count = s3_list_objects(s3, "test-bucket".into(), String::new())
+            .flatten()
+            .try_fold(0usize, |acc, _| ok(acc + 1))
+            .await
+            .unwrap();
+
+        assert_eq!(count, 0);
     }
 }

@@ -7,11 +7,6 @@
 //! Deletion of prefix is also implemented.
 //! Listing of files is planned.
 //!
-//! NOTE: futures from `futures v0.1` are used internally and thus for example `tokio-compat` is
-//! required to run the futures, until `rusoto` updates to use `tokio 0.2`.
-//!
-//! NOTE: also due to `rusoto` currently using `bytes 0.4`, a quick compatibility function between
-//! `bytes 0.4` and `bytes 0.5` was made that is not zero-cost (clones the bytes), which will affect
 //! performance of the upload functionality, until `rusoto` updates to `tokio 0.2` and `bytes 0.5`.
 
 use crate::timeout::*;
@@ -24,6 +19,7 @@ use futures_retry::{FutureRetry, RetryPolicy};
 use futures_stopwatch::try_stopwatch;
 use rusoto_core::ByteStream;
 use rusoto_s3::*;
+use snafu::futures::TryFutureExt as S;
 use snafu::ResultExt;
 use std::{
     marker::Unpin,
@@ -46,7 +42,71 @@ pub use config::UploadConfig;
 pub use err::*;
 
 #[cfg(test)]
+mod mock;
+#[cfg(test)]
 mod test;
+
+/// `s3_request` returns (est, bytes, total_time, success_time, attempts).
+/// `future_factory` is a bit funky, being a closure that returns a future that resolves to another
+/// future. We need the closure F to run the request multiple times. Its return type G is a future
+/// because it might need to for example open a file using async, which might then be used in H to
+/// stream from the file...
+/// This is needed so that we can get the length of the file before streaming to S3.
+pub(crate) async fn s3_request<F, G, H, T>(
+    future_factory: F,
+    n_retries: usize,
+    timeout: Arc<Mutex<T>>,
+) -> Result<(f64, u64, Duration, Duration, usize), Error>
+where
+    F: Fn() -> G + Unpin + Clone,
+    G: Future<Output = Result<(H, u64), Error>> + Send,
+    H: Future<Output = Result<(), Error>> + Send,
+    T: timeout::Timeout,
+{
+    let mut attempts1 = 0;
+    let mut attempts2 = 0;
+    try_stopwatch(
+        // Time the entire file upload (across all retries)
+        FutureRetry::new(
+            // Future factory - creates a future that reads file while uploading it
+            move || {
+                let future_factory = future_factory.clone();
+                let timeout = timeout.clone();
+                async move {
+                    attempts1 += 1;
+                    let (request, len) = future_factory().await?;
+                    let (est, timeout_value) = {
+                        let t = timeout.lock().unwrap();
+                        (t.get_estimate(), t.get_timeout(len, attempts1))
+                    };
+                    try_stopwatch(
+                        tokio::time::timeout(timeout_value, request)
+                            .with_context(|| err::Timeout {})
+                            .map(|result| result.and_then(|x| x)), // flatten the Result<Result<(), err>, timeout err>
+                    )
+                    .map_ok(move |(_, success_time)| (success_time, len, est))
+                    .await
+                }
+            },
+            // retry function
+            {
+                move |e| {
+                    attempts2 += 1;
+                    if attempts2 > n_retries {
+                        RetryPolicy::ForwardError(e)
+                    } else {
+                        RetryPolicy::WaitRetry(Duration::from_millis(200)) //  TODO adjust the time, maybe depending on retries
+                    }
+                }
+            },
+        ),
+    )
+    .await
+    .map(move |(((success_time, len, est), attempts), total_time)| {
+        (est, len, total_time, success_time, attempts)
+    })
+    .map_err(|(err, _attempts)| err)
+}
 
 /// S3 client for testing - assumes local minio on port 9000 and an existing credentials profile
 /// called `testing`
