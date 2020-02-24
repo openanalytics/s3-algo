@@ -24,20 +24,6 @@ impl Timeout for TimeoutState {
         0.0
     }
 }
-macro_rules! all_file_paths {
-    ($dir_path:expr $(, max_open = $max_open:expr)?) => {
-        walkdir::WalkDir::new(&$dir_path)
-            $(.max_open($max_open))?
-            .into_iter()
-            .filter_map(|entry|
-                entry.ok().and_then(|entry| {
-                    if entry.file_type().is_file() {
-                        Some(entry.path().to_owned())
-                    } else {
-                        None
-                    }
-                }))};
-}
 
 fn rand_string(n: usize) -> String {
     rand::thread_rng()
@@ -80,8 +66,6 @@ async fn s3_upload_files_seq_count() {
 
 #[tokio::test]
 async fn s3_upload_file_attempts_count() {
-    let timeout = Arc::new(Mutex::new(TimeoutState));
-
     const ATTEMPTS: usize = 4;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
 
@@ -90,7 +74,7 @@ async fn s3_upload_file_attempts_count() {
 
     let cli = S3MockRetry::new(ATTEMPTS - 1);
 
-    let result = s3_upload_files(
+    s3_upload_files(
         cli,
         "any_bucket".into(),
         files_recursive(path, PathBuf::new()),
@@ -125,7 +109,7 @@ async fn test_s3_upload_files() {
     s3_upload_files(
         s3.clone(),
         "test-bucket".into(),
-        files_recursive(dir, dir.strip_prefix(tmp_dir).unwrap().to_owned()),
+        files_recursive(dir.clone(), dir.strip_prefix(tmp_dir).unwrap().to_owned()),
         UploadConfig::default(),
         |result| ok(()),
         PutObjectRequest::default
@@ -158,6 +142,7 @@ async fn test_s3_upload_files() {
 // fn test_s3_delete_files
 // - and make it delete enough files to trigger paging
 
+/*
 #[tokio::test]
 async fn test_s3_timeout() {
     // TODO (not sure yet exactly what it's supposed to test)
@@ -186,6 +171,7 @@ async fn test_s3_timeout() {
 
     println!("{:?}", result.unwrap());
 }
+*/
 
 // Just to be able to easily create mock objects, we create a temporary trait with defaults that
 // panic

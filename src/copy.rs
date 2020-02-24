@@ -46,36 +46,9 @@ where
     let timeout_state = Arc::new(Mutex::new(TimeoutState::new(cfg)));
 
     let jobs = files.map(move |src| {
-        let (default, bucket, s3) = (
-            default_request.clone(),
-            bucket.clone(),
-            s3.clone(),
-        );
+        let (default, bucket, s3) = (default_request.clone(), bucket.clone(), s3.clone());
         s3_request(
-            move || {
-                let (src, s3, bucket, default) =
-                    (src.clone(), s3.clone(), bucket.clone(), default.clone());
-                async move {
-                    let (stream, len) = src.create_stream().await?;
-                    let key = src.get_key().to_owned();
-                    let (s3, bucket, default) = (s3.clone(), bucket.clone(), default.clone());
-                    Ok((
-                        async move {
-                            s3.put_object(PutObjectRequest {
-                                bucket: bucket.clone(),
-                                key: key.clone(),
-                                body: Some(ByteStream::new(stream)),
-                                content_length: Some(len as i64),
-                                ..default()
-                            })
-                            .await
-                            .with_context(move || err::PutObject { key })
-                            .map(drop)
-                        },
-                        len,
-                    ))
-                }
-            },
+            move || src.clone().create_upload_future(s3.clone(), bucket.clone(), default.clone()).boxed(),
             n_retries,
             timeout_state.clone(),
         )
@@ -147,15 +120,49 @@ impl ObjectSource {
             Self::Data { .. } => unimplemented!(),
         }
     }
+    pub async fn create_upload_future<C, R>(
+        self,
+        s3: C,
+        bucket: String,
+        default: R,
+    ) -> Result<(impl Future<Output = Result<(), Error>>, u64), Error>
+    where
+        C: S3 + Clone,
+        R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
+    {
+        let (stream, len) = self.create_stream().await?;
+        let key = self.get_key().to_owned();
+        let (s3, bucket, default) = (s3.clone(), bucket.clone(), default.clone());
+        let future = async move {
+            s3.put_object(PutObjectRequest {
+                bucket: bucket.clone(),
+                key: key.clone(),
+                body: Some(ByteStream::new(stream)),
+                content_length: Some(len as i64),
+                ..default()
+            })
+            .boxed()
+            .with_context(move || err::PutObject { key })
+            .await
+            .map(drop)
+        };
+        Ok((
+            future,
+            len,
+        ))
+    }
     pub fn get_key(&self) -> &str {
         match self {
-            Self::File {key, ..} => &key,
-            Self::Data {key, ..} => &key,
+            Self::File { key, .. } => &key,
+            Self::Data { key, .. } => &key,
         }
     }
 }
 
-pub fn files_recursive(src_dir: PathBuf, key_prefix: PathBuf) -> impl Iterator<Item = ObjectSource> {
+pub fn files_recursive(
+    src_dir: PathBuf,
+    key_prefix: PathBuf,
+) -> impl Iterator<Item = ObjectSource> {
     walkdir::WalkDir::new(&src_dir)
         .into_iter()
         .filter_map(move |entry| {
@@ -202,7 +209,7 @@ pub(crate) async fn s3_request<F, G, H, T>(
 ) -> Result<(f64, u64, Duration, Duration, usize), Error>
 where
     F: Fn() -> G + Unpin + Clone,
-    G: Future<Output = Result<(H, u64), Error>>,
+    G: Future<Output = Result<(H, u64), Error>> + Send,
     H: Future<Output = Result<(), Error>> + Send,
     T: Timeout,
 {
@@ -217,7 +224,7 @@ where
                 let timeout = timeout.clone();
                 async move {
                     attempts1 += 1;
-                    let (request, len) = future_factory().await?;
+                    let (request, len) = future_factory().boxed().await?;
                     let (est, timeout_value) = {
                         let t = timeout.lock().unwrap();
                         (t.get_estimate(), t.get_timeout(len, attempts1))
@@ -228,6 +235,7 @@ where
                             .map(|result| result.and_then(|x| x)), // flatten the Result<Result<(), err>, timeout err>
                     )
                     .map_ok(move |(_, success_time)| (success_time, len, est))
+                    .boxed()
                     .await
                 }
             },

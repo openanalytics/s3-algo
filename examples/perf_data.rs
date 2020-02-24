@@ -85,13 +85,11 @@ async fn benchmark_s3_upload(
         upload_perf_log_update(&mut std::io::stdout(), res);
         ok(())
     };
-    let files_to_upload = all_file_paths!(dir_path);
 
     s3_upload_files(
         s3,
         bucket,
-        files_to_upload,
-        move |path| PathBuf::from(&prefix).join(path.strip_prefix(&dir_path).unwrap()),
+        files_recursive(dir_path, PathBuf::from(&prefix)),
         cfg,
         progress,
         Default::default,
