@@ -93,7 +93,7 @@ async fn s3_upload_file_attempts_count() {
 
     let result = s3_request(
         |attempts| {
-            stream_to_s3(
+            stream_file_to_s3(
                 cli.clone(),
                 path.clone(),
                 "any_bucket".into(),
@@ -166,7 +166,7 @@ async fn test_s3_upload_files() {
 // - and make it delete enough files to trigger paging
 
 #[tokio::test]
-async fn test_s3_upload_file_timeout() {
+async fn test_s3_timeout() {
     // TODO (not sure yet exactly what it's supposed to test)
     // it simulates some timeout anyway
     let dir = tempdir::TempDir::new("testing").unwrap();
@@ -177,7 +177,7 @@ async fn test_s3_upload_file_timeout() {
     let cli = S3MockTimeout::new(1);
     let result = s3_request(
         |attempts| {
-            stream_to_s3(
+            stream_file_to_s3(
                 cli.clone(),
                 path.clone(),
                 "testing".into(),

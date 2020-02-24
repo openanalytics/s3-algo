@@ -36,11 +36,11 @@ use tokio_util::codec::{BytesCodec, FramedRead};
 
 mod config;
 mod copy;
-mod delete;
 mod err;
+mod list_actions;
 
 pub use copy::*;
-pub use delete::*;
+pub use list_actions::*;
 pub mod timeout;
 pub use config::UploadConfig;
 pub use err::*;

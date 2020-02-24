@@ -56,7 +56,7 @@ where
 
         s3_request(
             move |attempts| {
-                stream_to_s3(
+                stream_file_to_s3(
                     s3.clone(),
                     path.clone(),
                     bucket.clone(),
@@ -159,7 +159,7 @@ where
 }
 
 /// returns (current estimate, number of bytes uploaded)
-pub(crate) async fn stream_to_s3<T, C, R>(
+pub(crate) async fn stream_file_to_s3<T, C, R>(
     s3: C,
     path: PathBuf,
     bucket: String,
