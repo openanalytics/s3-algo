@@ -11,7 +11,7 @@
 
 use crate::timeout::*;
 use futures::{
-    future::{ok, Future, TryFutureExt},
+    future::{Future, TryFutureExt},
     prelude::*,
     stream,
 };
