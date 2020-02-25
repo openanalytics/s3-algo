@@ -119,9 +119,7 @@ impl ObjectSource {
 
                 Ok((
                     ByteStream::new(
-                        ok(FramedRead::new(file, BytesCodec::new())
-                            .map_ok(bytes::BytesMut::freeze))
-                        .try_flatten_stream(),
+                        FramedRead::new(file, BytesCodec::new()).map_ok(bytes::BytesMut::freeze),
                     ),
                     len,
                 ))
