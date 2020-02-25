@@ -31,12 +31,12 @@ use tokio::time::delay_for;
 use tokio_util::codec::{BytesCodec, FramedRead};
 
 mod config;
-mod copy;
 mod err;
 mod list_actions;
+mod upload;
 
-pub use copy::*;
 pub use list_actions::*;
+pub use upload::*;
 pub mod timeout;
 pub use config::UploadConfig;
 pub use err::*;

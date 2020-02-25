@@ -129,7 +129,6 @@ pub fn s3_list_objects<C: S3 + Clone + Send + Sync>(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::s3_upload_files;
     use crate::test::rand_string;
     #[tokio::test]
     async fn test_s3_delete_files() {

@@ -1,16 +1,9 @@
 use crate::{mock::*, timeout::Timeout, *};
-use futures::future::{ok, ready};
-use multi_default_trait_impl::{default_trait_impl, trait_impl};
+use futures::future::ok;
 use rand::Rng;
-use rusoto_core::*;
-use std::{
-    path::Path,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{path::Path, sync::Mutex, time::Duration};
 use tempdir::TempDir;
-use tokio::{io::AsyncReadExt, time::delay_for};
+use tokio::io::AsyncReadExt;
 
 /// Timeout implementation used for testing
 struct TimeoutState;

@@ -5,15 +5,8 @@ High-performance algorithms for batch operations in Amazon S3, on top of [rusoto
 https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html
 
 Currently, uploading multiple files has been the main focus.
-Deletion of prefix is also implemented.
-Listing of files is planned.
-
-NOTE: futures from `futures v0.1` are used internally and thus for example `tokio-compat` is
-required to run the futures, until `rusoto` updates to use `tokio 0.2`.
-
-NOTE: also due to `rusoto` currently using `bytes 0.4`, a quick compatibility function between
-`bytes 0.4` and `bytes 0.5` was made that is not zero-cost (clones the bytes), which will affect
-performance of the upload functionality, until `rusoto` updates to `tokio 0.2` and `bytes 0.5`.
+Listing of files and deletion of prefix is also implemented.
+Copying files (S3 to S3) is planned.
 
 # Upload
 ## Features of the `s3_upload_files` function

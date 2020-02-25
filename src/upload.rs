@@ -90,6 +90,15 @@ pub enum ObjectSource {
     Data { data: Vec<u8>, key: String },
 }
 impl ObjectSource {
+    pub fn file(path: PathBuf, key: String) -> Self {
+        Self::File { path, key }
+    }
+    pub fn data<D: Into<Vec<u8>>>(data: D, key: String) -> Self {
+        Self::Data {
+            data: data.into(),
+            key,
+        }
+    }
     pub async fn create_stream(&self) -> Result<(ByteStream, u64), Error> {
         match self {
             Self::File { path, .. } => {
