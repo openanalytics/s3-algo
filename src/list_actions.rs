@@ -150,7 +150,6 @@ mod test {
                 if result.seq % 100 == 0 {
                     println!("{} files uploaded", result.seq);
                 }
-                ok(())
             },
             PutObjectRequest::default,
         )

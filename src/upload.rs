@@ -1,4 +1,5 @@
 use super::*;
+use futures::future::ok;
 
 /// Upload multiple files to S3.
 ///
@@ -19,7 +20,7 @@ use super::*;
 ///
 /// `default_request` constructs the default request struct - only the fields `bucket`, `key`,
 /// `body` and `content_length` are overwritten by the upload algorithm.
-pub async fn s3_upload_files<P, F1, C, I, R>(
+pub async fn s3_upload_files<P, C, I, R>(
     s3: C,
     bucket: String,
     files: I,
@@ -29,8 +30,7 @@ pub async fn s3_upload_files<P, F1, C, I, R>(
 ) -> Result<(), Error>
 where
     C: S3 + Clone + Send + Sync + Unpin,
-    P: Fn(UploadFileResult) -> F1,
-    F1: Future<Output = Result<(), Error>>,
+    P: Fn(UploadFileResult),
     I: Iterator<Item = ObjectSource>,
     R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
 {
@@ -75,7 +75,8 @@ where
                 attempts,
                 est,
             };
-            progress(result)
+            progress(result);
+            ok(())
         })
         .then(move |x| async move {
             delay_for(Duration::from_secs(extra_copy_time_s)).await;

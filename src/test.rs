@@ -48,7 +48,6 @@ async fn s3_upload_files_seq_count() {
             let mut counter = counter.lock().unwrap();
             assert_eq!(*counter, res.seq);
             *counter += 1;
-            ok(())
         },
         PutObjectRequest::default,
     )
@@ -71,10 +70,7 @@ async fn s3_upload_file_attempts_count() {
         "any_bucket".into(),
         files_recursive(path, PathBuf::new()),
         UploadConfig::default(),
-        |result| async move {
-            assert_eq!(result.attempts, ATTEMPTS);
-            Ok(())
-        },
+        |result| assert_eq!(result.attempts, ATTEMPTS),
         PutObjectRequest::default,
     )
     .await
@@ -105,7 +101,7 @@ async fn test_s3_upload_files() {
             dir.strip_prefix(tmp_dir.path()).unwrap().to_owned(),
         ),
         UploadConfig::default(),
-        |_| ok(()),
+        |_| (),
         PutObjectRequest::default,
     )
     .await
