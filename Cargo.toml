@@ -1,7 +1,7 @@
 [package]
 name = "s3-algo"
 description = "High-performance algorithms for batch operations to Amazon S3"
-version = "0.1.6"
+version = "0.1.7"
 authors = ["Erlend Langseth <3rlendhl@gmail.com>"]
 license = "MIT"
 edition = "2018"
@@ -11,7 +11,7 @@ edition = "2018"
 [dependencies]
 futures = {version = "0.3.1"}
 futures-stopwatch = "0.3.0"
-futures-retry = {git = "https://gitlab.com/mexus/futures-retry.git", rev="d3ba6a"}
+futures-retry = "0.5.0"
 rusoto_s3 = "0.43.0-beta.1"
 rusoto_core = "0.43.0-beta.1"
 tokio = {version = "0.2.11", features = ["time", "fs", "macros", "rt-threaded", "io-util"]}
