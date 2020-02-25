@@ -1,0 +1,9 @@
+#! /usr/bin/env sh
+
+cargo fmt -- --check
+code="$?"
+
+if [ "$code" -ne 0 ]; then
+    echo "Please run \`cargo fmt' before committing"
+    exit "$code"
+fi
