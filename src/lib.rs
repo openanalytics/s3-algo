@@ -7,7 +7,6 @@
 //! Deletion of prefix is also implemented.
 //! Listing of files is planned.
 //!
-//! performance of the upload functionality, until `rusoto` updates to `tokio 0.2` and `bytes 0.5`.
 
 use crate::timeout::*;
 use futures::{
@@ -31,7 +30,7 @@ use tokio::time::delay_for;
 use tokio_util::codec::{BytesCodec, FramedRead};
 
 mod config;
-mod err;
+pub mod err;
 mod list_actions;
 mod upload;
 
@@ -39,28 +38,68 @@ pub use list_actions::*;
 pub use upload::*;
 pub mod timeout;
 pub use config::UploadConfig;
-pub use err::*;
+pub use err::Error;
 
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
 mod test;
 
-/// `s3_request` returns (est, bytes, total_time, success_time, attempts).
+/// Result of a single S3 request.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestReport {
+    /// The number of this request in a series of multiple requests (0 if not applicable)
+    pub seq: usize,
+    /// Size in bytes of any file or object involved in this request (0 if not applicable)
+    pub bytes: u64,
+    /// The total time including all retries
+    pub total_time: Duration,
+    /// The time of the successful request
+    pub success_time: Duration,
+    /// Number of attempts. A value of `1` means no retries - success on first attempt.
+    pub attempts: usize,
+    /// Estimated bytes/ms upload speed at the initiation of the upload of this file. Useful for
+    /// debugging the upload algorithm and not much more
+    pub est: f64,
+}
+
+/// Issue a single S3 request, with retries and appropriate timeouts using sane defaults.
+pub async fn s3_single_request<F, G, R>(future_factory: F) -> Result<(RequestReport, R), Error>
+where
+    F: Fn() -> G + Unpin + Clone + Send,
+    G: Future<Output = Result<R, Error>> + Send,
+{
+    s3_request(
+        move || {
+            let factory = future_factory.clone();
+            async move { Ok((factory(), 0)) }
+        },
+        10,
+        Arc::new(Mutex::new(TimeoutState::new(UploadConfig::default()))),
+    )
+    .await
+}
+
+/// Every request to S3 should be issued with `s3_request`, which puts the appropriate timeouts and
+/// retries the request, as well as times it.
+///
 /// `future_factory` is a bit funky, being a closure that returns a future that resolves to another
 /// future. We need the closure F to run the request multiple times. Its return type G is a future
 /// because it might need to for example open a file using async, which might then be used in H to
 /// stream from the file...
 /// This is needed so that we can get the length of the file before streaming to S3.
-pub(crate) async fn s3_request<F, G, H, T>(
+/// The length (u64) can be set to 0 whenever there is no interest in tracking bandwidth.
+/// (in general we are interested in bandwidth of files/objects moving around, not including the
+/// rest of the fields in the request)
+pub(crate) async fn s3_request<F, G, H, T, R>(
     future_factory: F,
     n_retries: usize,
     timeout: Arc<Mutex<T>>,
-) -> Result<(f64, u64, Duration, Duration, usize), Error>
+) -> Result<(RequestReport, R), Error>
 where
     F: Fn() -> G + Unpin + Clone,
     G: Future<Output = Result<(H, u64), Error>> + Send,
-    H: Future<Output = Result<(), Error>> + Send,
+    H: Future<Output = Result<R, Error>> + Send,
     T: timeout::Timeout,
 {
     let mut attempts1 = 0;
@@ -84,7 +123,7 @@ where
                             .with_context(|| err::Timeout {})
                             .map(|result| result.and_then(|x| x)), // flatten the Result<Result<(), err>, timeout err>
                     )
-                    .map_ok(move |(_, success_time)| (success_time, len, est))
+                    .map_ok(move |(response, success_time)| (response, success_time, len, est))
                     .await
                 }
             },
@@ -102,9 +141,21 @@ where
         ),
     )
     .await
-    .map(move |(((success_time, len, est), attempts), total_time)| {
-        (est, len, total_time, success_time, attempts)
-    })
+    .map(
+        move |(((response, success_time, bytes, est), attempts), total_time)| {
+            (
+                RequestReport {
+                    seq: 0,
+                    bytes,
+                    total_time,
+                    success_time,
+                    attempts,
+                    est,
+                },
+                response,
+            )
+        },
+    )
     .map_err(|(err, _attempts)| err)
 }
 

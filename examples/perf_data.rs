@@ -1,5 +1,4 @@
 use clap::*;
-use futures::future::ok;
 use s3_algo::*;
 use std::{
     io::Write,
@@ -99,7 +98,7 @@ pub fn upload_perf_log_init<W: Write>(out: &mut W) {
         w = 18
     );
 }
-pub fn upload_perf_log_update<W: Write>(out: &mut W, res: UploadFileResult) {
+pub fn upload_perf_log_update<W: Write>(out: &mut W, res: RequestReport) {
     // TODO: Write performance data to file with tokio
     let megabytes = res.bytes as f64 / 1_000_000.0;
     let speed = megabytes / res.success_time.as_secs_f64();

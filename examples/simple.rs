@@ -1,4 +1,3 @@
-use futures::future::ok;
 use s3_algo::*;
 
 #[tokio::main]

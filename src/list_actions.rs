@@ -6,6 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+/// A stream that can list objects, and (using member functions) delete or copy listed files.
 pub struct ListObjects<C, S> {
     s3: C,
     bucket: String,
@@ -82,14 +83,35 @@ where
     }
 }
 
-/// Generates a stream of ListObjects with all objects in a bucket with the given prefix
-pub fn s3_list_objects<C: S3 + Clone + Send + Sync>(
+/// List all objects with a certain prefix
+pub fn s3_list_prefix<C: S3 + Clone + Send + Sync>(
     s3: C,
     bucket: String,
     prefix: String,
 ) -> ListObjects<C, impl Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send> {
-    let s3_1 = s3.clone();
     let bucket1 = bucket.clone();
+    s3_list_objects(s3, bucket, move || ListObjectsV2Request {
+        bucket: bucket1.clone(),
+        prefix: Some(prefix.clone()),
+        ..Default::default()
+    })
+}
+
+/// List all objects given a request factory.
+/// Paging is taken care of, so you need not fill in `continuation_token` in the
+/// `ListObjectsV2Request`.
+///
+/// `bucket` is only needed for eventual further operations on `ListObjects`.
+pub fn s3_list_objects<C, F>(
+    s3: C,
+    bucket: String,
+    request_factory: F,
+) -> ListObjects<C, impl Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send>
+where
+    C: S3 + Clone + Send + Sync,
+    F: Fn() -> ListObjectsV2Request + Send + Sync + Clone,
+{
+    let s3_1 = s3.clone();
     let stream = futures::stream::unfold(
         // Initial state = (next continuation token, first request)
         (None, true),
@@ -97,19 +119,15 @@ pub fn s3_list_objects<C: S3 + Clone + Send + Sync>(
         //    - the stream will yield ListObjectsV2Output
         //      and stop when there is nothing left to list
         move |(cont, first)| {
-            let s3 = s3_1.clone();
-            let bucket = bucket1.clone();
-            let prefix = Some(prefix.clone());
+            let (s3, request_factory) = (s3_1.clone(), request_factory.clone());
             async move {
                 if let (&None, false) = (&cont, first) {
                     None
                 } else {
                     let result = s3
                         .list_objects_v2(ListObjectsV2Request {
-                            bucket,
-                            prefix,
                             continuation_token: cont,
-                            ..Default::default()
+                            ..request_factory()
                         })
                         .await
                         .map_err(|e| err::Error::ListObjectsV2 { source: e });
@@ -157,13 +175,13 @@ mod test {
         .unwrap();
 
         // Delete all
-        s3_list_objects(s3.clone(), "test-bucket".into(), String::new())
+        s3_list_prefix(s3.clone(), "test-bucket".into(), String::new())
             .delete_all()
             .await
             .unwrap();
 
         // List
-        let count = s3_list_objects(s3, "test-bucket".into(), String::new())
+        let count = s3_list_prefix(s3, "test-bucket".into(), String::new())
             .flatten()
             .try_fold(0usize, |acc, _| ok(acc + 1))
             .await

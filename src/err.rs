@@ -5,7 +5,7 @@ type ListObjectsV2Error = rusoto_core::RusotoError<rusoto_s3::ListObjectsV2Error
 type DeleteObjectsError = rusoto_core::RusotoError<rusoto_s3::DeleteObjectsError>;
 
 #[derive(Snafu, Debug)]
-#[snafu(visibility = "pub(crate)")]
+#[snafu(visibility = "pub")]
 pub enum Error {
     #[snafu(display("Io error: {}: {}", description, source))]
     Io {

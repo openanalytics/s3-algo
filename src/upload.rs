@@ -11,7 +11,7 @@ use futures::future::ok;
 /// For common use cases it is adviced to use `files_recursive` as `files`.
 ///
 /// `progress` will be called after the upload of each file, with some data about that upload.
-/// The first `usize` parameter is the number of this file in the upload, while [`UploadFileResult`](struct.UploadFileResult.html)
+/// The first `usize` parameter is the number of this file in the upload, while [`RequestReport`](struct.RequestReport.html)
 /// holds more data such as size in bytes, and the duration of the upload. It is thus possible to
 /// report progress both in amount of files, or amount of bytes, depending on what granularity is
 /// desired.
@@ -30,7 +30,7 @@ pub async fn s3_upload_files<P, C, I, R>(
 ) -> Result<(), Error>
 where
     C: S3 + Clone + Send + Sync + Unpin,
-    P: Fn(UploadFileResult),
+    P: Fn(RequestReport),
     I: Iterator<Item = ObjectSource>,
     R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
 {
@@ -65,16 +65,8 @@ where
         .buffer_unordered(copy_parallelization)
         .zip(stream::iter(0..))
         .map(|(result, i)| result.map(|result| (i, result)))
-        .try_for_each(|(i, result)| {
-            let (est, bytes, total_time, success_time, attempts) = result;
-            let result = UploadFileResult {
-                seq: i,
-                bytes,
-                total_time,
-                success_time,
-                attempts,
-                est,
-            };
+        .try_for_each(|(i, (mut result, _))| {
+            result.seq = i;
             progress(result);
             ok(())
         })
@@ -186,23 +178,6 @@ pub fn files_recursive(
                 }
             })
         })
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct UploadFileResult {
-    /// The number of this file (how many files were already uploaded)
-    pub seq: usize,
-    /// Size in bytes of uploaded file
-    pub bytes: u64,
-    /// The total time it took to upload the file including all retries
-    pub total_time: Duration,
-    /// The time it took to upload the file looking at the successful request only
-    pub success_time: Duration,
-    /// Number of attempts. A value of `1` means no retries - success on first attempt.
-    pub attempts: usize,
-    /// Estimated bytes/ms upload speed at the initiation of the upload of this file. Useful for
-    /// debugging the upload algorithm and not much more
-    pub est: f64,
 }
 
 #[cfg(test)]

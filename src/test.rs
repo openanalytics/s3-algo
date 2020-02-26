@@ -1,5 +1,4 @@
 use crate::{mock::*, timeout::Timeout, *};
-use futures::future::ok;
 use rand::Rng;
 use std::{path::Path, sync::Mutex, time::Duration};
 use tempdir::TempDir;
@@ -11,7 +10,7 @@ impl Timeout for TimeoutState {
     fn get_timeout(&self, _bytes: u64, _attempts: usize) -> Duration {
         Duration::from_secs(4)
     }
-    fn update(&mut self, _: &UploadFileResult) {}
+    fn update(&mut self, _: &RequestReport) {}
     fn get_estimate(&self) -> f64 {
         0.0
     }
