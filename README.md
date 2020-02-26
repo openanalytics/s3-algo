@@ -8,6 +8,30 @@ Currently, uploading multiple files has been the main focus.
 Listing of files and deletion of prefix is also implemented.
 Copying files (S3 to S3) is planned.
 
+This crate is only in its infancy, and we happily welcome PR's or suggestions for improvement of the API.
+
+# Running tests and examples
+Both tests and examples require that an S3 service such as `minio` is running locally at port 9000.
+Tests assume that a credentials profile exists - for example in `~/.aws/credentials`:
+
+```
+[testing]
+aws_access_key_id = 123456789
+aws_secret_access_key = 123456789
+```
+
+# Listing, deleting and copying objects
+Is all done with entrypoint `s3_list_objects()` or `s3_list_prefix()`, which return a `ListObjects`
+object which can delete and copy files.
+Example:
+
+```rust
+s3_list_prefix(s3, "test-bucket".to_string(), "some/prefix".to_string())
+    .delete_all()
+    .await
+    .unwrap();
+```
+
 # Upload
 ## Features of the `s3_upload_files` function
 * As generic as possible, to support many use cases.
@@ -56,12 +80,4 @@ test-bucket/
 lala
 ```
 
-## Running tests and examples
-Both tests and examples require that an S3 service such as `minio` is running locally at port 9000.
-Tests assume that a credentials profile exists - for example in `~/.aws/credentials`:
 
-```
-[testing]
-aws_access_key_id = 123456789
-aws_secret_access_key = 123456789
-```

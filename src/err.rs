@@ -1,8 +1,7 @@
+use rusoto_core::RusotoError;
+use rusoto_s3::*;
 use snafu::{Backtrace, Snafu};
 use std::io;
-type PutError = rusoto_core::RusotoError<rusoto_s3::PutObjectError>;
-type ListObjectsV2Error = rusoto_core::RusotoError<rusoto_s3::ListObjectsV2Error>;
-type DeleteObjectsError = rusoto_core::RusotoError<rusoto_s3::DeleteObjectsError>;
 
 #[derive(Snafu, Debug)]
 #[snafu(visibility = "pub")]
@@ -21,16 +20,21 @@ pub enum Error {
     },
     #[snafu(display("S3 'put object' error on key '{}': {}", key, source))]
     PutObject {
-        source: PutError,
+        source: RusotoError<PutObjectError>,
         key: String,
         backtrace: Backtrace,
     },
     #[snafu(display("S3 operation timed out"))]
     Timeout { source: tokio::time::Elapsed },
     #[snafu(display("Error listing objects in S3: {:?}", source))]
-    ListObjectsV2 { source: ListObjectsV2Error },
+    ListObjectsV2 {
+        source: RusotoError<ListObjectsV2Error>,
+    },
     #[snafu(display("Error deleting objects in S3: {:?}", source))]
-    DeleteObjects { source: DeleteObjectsError },
-    #[snafu(display("Copying from local file to local file is not supported"))]
-    LocalToLocal,
+    DeleteObjects {
+        source: RusotoError<DeleteObjectsError>,
+    },
+    CopyObject {
+        source: RusotoError<CopyObjectError>,
+    },
 }

@@ -2,9 +2,12 @@ use super::*;
 use futures::future::{ok, ready};
 use futures::stream::Stream;
 use rusoto_s3::ListObjectsV2Output;
+use snafu::futures::TryStreamExt;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
+pub type ListObjectsV2Result = Result<ListObjectsV2Output, RusotoError<ListObjectsV2Error>>;
 
 /// A stream that can list objects, and (using member functions) delete or copy listed files.
 pub struct ListObjects<C, S> {
@@ -15,13 +18,14 @@ pub struct ListObjects<C, S> {
 impl<C, S> ListObjects<C, S>
 where
     C: S3 + Clone + Send,
-    S: Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send,
+    S: Stream<Item = ListObjectsV2Result> + Sized + Send,
 {
     pub fn delete_all(self) -> impl Future<Output = Result<(), Error>> {
         // For each ListObjectsV2Output, send a request to delete all the listed objects
         let ListObjects { s3, bucket, stream } = self;
         stream
             .filter_map(|response| ready(response.map(|r| r.contents).transpose()))
+            .context(err::ListObjectsV2)
             .try_for_each(move |contents| {
                 let s3 = s3.clone();
                 let bucket = bucket.clone();
@@ -43,33 +47,60 @@ where
                         ..Default::default()
                     })
                     .map_ok(drop)
-                    .map_err(|e| err::Error::DeleteObjects { source: e })
+                    .context(err::DeleteObjects)
                     .await
                 }
             })
     }
     /// Flatten into a stream of Objects.
-    /// WARNING: discards any error during listing
-    // pub fn flatten(self) -> impl TryStream<Ok = Object, Error = Error> {
-    pub fn flatten(self) -> impl Stream<Item = Result<Object, Error>> {
+    pub fn flatten(self) -> impl TryStream<Ok = Object, Error = RusotoError<ListObjectsV2Error>> {
         self.stream
-            .try_filter_map(|response| {
-                let r: Option<Vec<Object>> = response.contents;
-                ok(r)
-            })
+            .try_filter_map(|response| ok(response.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
             .try_flatten()
     }
 
-    /*
-    /// Copy all listed objects, to different bucket and keys as defined in `mapping`
-    pub fn copy_all<F>(self, mapping: F) -> impl Future<Output = Result<(), Error>> {
-        self.stream
-            .filter_map(|response| ready(response.map(|r| r.contents).transpose()))
-            .try_for_each(move |contents| {
+    /// Copy all listed objects, to a different S3 location as defined in `mapping` and
+    /// `dest_bucket`.
+    /// If `other_bucket` is not provided, copy to same bucket
+    // NOTE: first draft
+    // TODO: test
+    pub fn copy_all<F>(
+        self,
+        mapping: F,
+        dest_bucket: Option<String>,
+    ) -> impl Future<Output = Result<(), Error>>
+    where
+        F: Fn(String) -> String + Clone,
+    {
+        let ListObjects { s3, bucket, stream } = self;
+        let dest_bucket = dest_bucket.unwrap_or_else(|| bucket.clone());
+        stream
+            .try_filter_map(|response| ok(response.contents))
+            .map_ok(|x| stream::iter(x).map(Ok))
+            .try_flatten()
+            .try_filter_map(|obj| ok(obj.key))
+            .context(err::ListObjectsV2)
+            .try_for_each(move |key| {
+                let (s3, src_bucket, dest_bucket, mapping) = (
+                    s3.clone(),
+                    bucket.clone(),
+                    dest_bucket.clone(),
+                    mapping.clone(),
+                );
+                async move {
+                    s3.copy_object(CopyObjectRequest {
+                        copy_source: format!("{}/{}", src_bucket, key),
+                        bucket: dest_bucket,
+                        key: mapping(key),
+                        ..Default::default()
+                    })
+                    .map_ok(drop)
+                    .context(err::CopyObject)
+                    .await
+                }
             })
     }
-    */
 }
 
 impl<C, S> Stream for ListObjects<C, S>
@@ -88,7 +119,7 @@ pub fn s3_list_prefix<C: S3 + Clone + Send + Sync>(
     s3: C,
     bucket: String,
     prefix: String,
-) -> ListObjects<C, impl Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send> {
+) -> ListObjects<C, impl Stream<Item = ListObjectsV2Result> + Sized + Send> {
     let bucket1 = bucket.clone();
     s3_list_objects(s3, bucket, move || ListObjectsV2Request {
         bucket: bucket1.clone(),
@@ -106,7 +137,7 @@ pub fn s3_list_objects<C, F>(
     s3: C,
     bucket: String,
     request_factory: F,
-) -> ListObjects<C, impl Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send>
+) -> ListObjects<C, impl Stream<Item = ListObjectsV2Result> + Sized + Send>
 where
     C: S3 + Clone + Send + Sync,
     F: Fn() -> ListObjectsV2Request + Send + Sync + Clone,
@@ -129,8 +160,7 @@ where
                             continuation_token: cont,
                             ..request_factory()
                         })
-                        .await
-                        .map_err(|e| err::Error::ListObjectsV2 { source: e });
+                        .await;
                     let next_cont = if let Ok(ref response) = result {
                         response.next_continuation_token.clone()
                     } else {
