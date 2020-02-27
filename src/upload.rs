@@ -20,61 +20,63 @@ use futures::future::ok;
 ///
 /// `default_request` constructs the default request struct - only the fields `bucket`, `key`,
 /// `body` and `content_length` are overwritten by the upload algorithm.
-pub async fn s3_upload_files<P, C, I, R>(
+pub fn s3_upload_files<P, C, I, R>(
     s3: C,
     bucket: String,
     files: I,
     cfg: UploadConfig,
     progress: P,
     default_request: R,
-) -> Result<(), Error>
+) -> impl Future<Output = Result<(), Error>> + Send + 'static
 where
-    C: S3 + Clone + Send + Sync + Unpin,
-    P: Fn(RequestReport),
-    I: Iterator<Item = ObjectSource>,
-    R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
+    C: S3 + Clone + Send + Sync + Unpin + 'static,
+    P: Fn(RequestReport) + Send + Sync,
+    I: Iterator<Item = ObjectSource> + Send,
+    R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send + 'static,
 {
-    let extra_copy_time_s = cfg.extra_copy_time_s;
-    let extra_copy_file_time_s = cfg.extra_copy_file_time_s;
-    let copy_parallelization = cfg.copy_parallelization;
-    let n_retries = cfg.n_retries;
+    async move {
+        let extra_copy_time_s = cfg.extra_copy_time_s;
+        let extra_copy_file_time_s = cfg.extra_copy_file_time_s;
+        let copy_parallelization = cfg.copy_parallelization;
+        let n_retries = cfg.n_retries;
 
-    let timeout_state = Arc::new(Mutex::new(TimeoutState::new(cfg)));
+        let timeout_state = Arc::new(Mutex::new(TimeoutState::new(cfg)));
 
-    let jobs = files.map(move |src| {
-        let (default, bucket, s3) = (default_request.clone(), bucket.clone(), s3.clone());
-        s3_request(
-            move || {
-                src.clone()
-                    .create_upload_future(s3.clone(), bucket.clone(), default.clone())
-            },
-            n_retries,
-            timeout_state.clone(),
-        )
-        .boxed()
-    });
+        let jobs = files.map(move |src| {
+            let (default, bucket, s3) = (default_request.clone(), bucket.clone(), s3.clone());
+            s3_request(
+                move || {
+                    src.clone()
+                        .create_upload_future(s3.clone(), bucket.clone(), default.clone())
+                },
+                n_retries,
+                timeout_state.clone(),
+            )
+            .boxed()
+        });
 
-    // Run jobs in parallel,
-    //  adding eventual delays after each file upload and also at the end,
-    //  and counting the progress
-    stream::iter(jobs)
-        .then(move |x| async move {
-            delay_for(Duration::from_secs(extra_copy_file_time_s)).await;
-            x
-        })
-        .buffer_unordered(copy_parallelization)
-        .zip(stream::iter(0..))
-        .map(|(result, i)| result.map(|result| (i, result)))
-        .try_for_each(|(i, (mut result, _))| {
-            result.seq = i;
-            progress(result);
-            ok(())
-        })
-        .then(move |x| async move {
-            delay_for(Duration::from_secs(extra_copy_time_s)).await;
-            x
-        })
-        .await
+        // Run jobs in parallel,
+        //  adding eventual delays after each file upload and also at the end,
+        //  and counting the progress
+        stream::iter(jobs)
+            .then(move |x| async move {
+                delay_for(Duration::from_secs(extra_copy_file_time_s)).await;
+                x
+            })
+            .buffer_unordered(copy_parallelization)
+            .zip(stream::iter(0..))
+            .map(|(result, i)| result.map(|result| (i, result)))
+            .try_for_each(|(i, (mut result, _))| {
+                result.seq = i;
+                progress(result);
+                ok(())
+            })
+            .then(move |x| async move {
+                delay_for(Duration::from_secs(extra_copy_time_s)).await;
+                x
+            })
+            .await
+    }
 }
 
 #[derive(Clone, Debug)]

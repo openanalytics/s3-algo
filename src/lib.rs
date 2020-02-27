@@ -65,7 +65,7 @@ pub struct RequestReport {
 /// Issue a single S3 request, with retries and appropriate timeouts using sane defaults.
 pub async fn s3_single_request<F, G, R>(future_factory: F) -> Result<(RequestReport, R), Error>
 where
-    F: Fn() -> G + Unpin + Clone + Send,
+    F: Fn() -> G + Unpin + Clone + Send + Sync + 'static,
     G: Future<Output = Result<R, Error>> + Send,
 {
     s3_request(
@@ -90,72 +90,74 @@ where
 /// The length (u64) can be set to 0 whenever there is no interest in tracking bandwidth.
 /// (in general we are interested in bandwidth of files/objects moving around, not including the
 /// rest of the fields in the request)
-pub(crate) async fn s3_request<F, G, H, T, R>(
+pub(crate) fn s3_request<F, G, H, T, R>(
     future_factory: F,
     n_retries: usize,
     timeout: Arc<Mutex<T>>,
-) -> Result<(RequestReport, R), Error>
+) -> impl Future<Output = Result<(RequestReport, R), Error>> + Send + 'static
 where
-    F: Fn() -> G + Unpin + Clone,
+    F: Fn() -> G + Unpin + Clone + Send + Sync + 'static,
     G: Future<Output = Result<(H, u64), Error>> + Send,
     H: Future<Output = Result<R, Error>> + Send,
     T: timeout::Timeout,
 {
-    let mut attempts1 = 0;
-    let mut attempts2 = 0;
-    try_stopwatch(
-        // Time the entire file upload (across all retries)
-        FutureRetry::new(
-            // Future factory - creates a future that reads file while uploading it
-            move || {
-                let future_factory = future_factory.clone();
-                let timeout = timeout.clone();
-                async move {
-                    attempts1 += 1;
-                    let (request, len) = future_factory().await?;
-                    let (est, timeout_value) = {
-                        let t = timeout.lock().unwrap();
-                        (t.get_estimate(), t.get_timeout(len, attempts1))
-                    };
-                    try_stopwatch(
-                        tokio::time::timeout(timeout_value, request)
-                            .with_context(|| err::Timeout {})
-                            .map(|result| result.and_then(|x| x)), // flatten the Result<Result<(), err>, timeout err>
-                    )
-                    .map_ok(move |(response, success_time)| (response, success_time, len, est))
-                    .await
-                }
-            },
-            // retry function
-            {
-                move |e| {
-                    attempts2 += 1;
-                    if attempts2 > n_retries {
-                        RetryPolicy::ForwardError(e)
-                    } else {
-                        RetryPolicy::WaitRetry(Duration::from_millis(200)) //  TODO adjust the time, maybe depending on retries
+    async move {
+        let mut attempts1 = 0;
+        let mut attempts2 = 0;
+        try_stopwatch(
+            // Time the entire file upload (across all retries)
+            FutureRetry::new(
+                // Future factory - creates a future that reads file while uploading it
+                move || {
+                    let future_factory = future_factory.clone();
+                    let timeout = timeout.clone();
+                    async move {
+                        attempts1 += 1;
+                        let (request, len) = future_factory().await?;
+                        let (est, timeout_value) = {
+                            let t = timeout.lock().unwrap();
+                            (t.get_estimate(), t.get_timeout(len, attempts1))
+                        };
+                        try_stopwatch(
+                            tokio::time::timeout(timeout_value, request)
+                                .with_context(|| err::Timeout {})
+                                .map(|result| result.and_then(|x| x)), // flatten the Result<Result<(), err>, timeout err>
+                        )
+                        .map_ok(move |(response, success_time)| (response, success_time, len, est))
+                        .await
                     }
-                }
-            },
-        ),
-    )
-    .await
-    .map(
-        move |(((response, success_time, bytes, est), attempts), total_time)| {
-            (
-                RequestReport {
-                    seq: 0,
-                    bytes,
-                    total_time,
-                    success_time,
-                    attempts,
-                    est,
                 },
-                response,
-            )
-        },
-    )
-    .map_err(|(err, _attempts)| err)
+                // retry function
+                {
+                    move |e| {
+                        attempts2 += 1;
+                        if attempts2 > n_retries {
+                            RetryPolicy::ForwardError(e)
+                        } else {
+                            RetryPolicy::WaitRetry(Duration::from_millis(200)) //  TODO adjust the time, maybe depending on retries
+                        }
+                    }
+                },
+            ),
+        )
+        .await
+        .map(
+            move |(((response, success_time, bytes, est), attempts), total_time)| {
+                (
+                    RequestReport {
+                        seq: 0,
+                        bytes,
+                        total_time,
+                        success_time,
+                        attempts,
+                        est,
+                    },
+                    response,
+                )
+            },
+        )
+        .map_err(|(err, _attempts)| err)
+    }
 }
 
 /// S3 client for testing - assumes local minio on port 9000 and an existing credentials profile
