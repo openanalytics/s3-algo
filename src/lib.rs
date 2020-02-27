@@ -65,8 +65,8 @@ pub struct RequestReport {
 /// Issue a single S3 request, with retries and appropriate timeouts using sane defaults.
 pub async fn s3_single_request<F, G, R>(future_factory: F) -> Result<(RequestReport, R), Error>
 where
-    F: Fn() -> G + Unpin + Clone + Send,
-    G: Future<Output = Result<R, Error>> + Send,
+    F: Fn() -> G + Unpin + Clone + Send + Sync + 'static,
+    G: Future<Output = Result<R, Error>> + Send + Sync + 'static,
 {
     s3_request(
         move || {
@@ -96,9 +96,9 @@ pub(crate) async fn s3_request<F, G, H, T, R>(
     timeout: Arc<Mutex<T>>,
 ) -> Result<(RequestReport, R), Error>
 where
-    F: Fn() -> G + Unpin + Clone,
-    G: Future<Output = Result<(H, u64), Error>> + Send,
-    H: Future<Output = Result<R, Error>> + Send,
+    F: Fn() -> G + Unpin + Clone + Send + Sync + 'static,
+    G: Future<Output = Result<(H, u64), Error>> + Send + 'static,
+    H: Future<Output = Result<R, Error>> + Send + 'static,
     T: timeout::Timeout,
 {
     let mut attempts1 = 0;
