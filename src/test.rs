@@ -23,6 +23,21 @@ pub(crate) fn rand_string(n: usize) -> String {
         .collect::<String>()
 }
 
+#[test]
+fn everything_is_sync_and_static() {
+    fn verify<F, T>(_: F)
+    where
+        F: Future<Output = T> + Send + 'static,
+    {
+    }
+
+    verify(s3_request(
+        || async move { Ok((async move { Ok(()) }, 0)) },
+        5,
+        Arc::new(Mutex::new(TimeoutState)),
+    ))
+}
+
 #[tokio::test]
 async fn s3_upload_files_seq_count() {
     const N_FILES: usize = 100;

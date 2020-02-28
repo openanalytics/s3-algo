@@ -2,7 +2,7 @@
 //! past file upload results. A default implementation `TimeoutState` is provided.
 use crate::{RequestReport, UploadConfig};
 use std::time::Duration;
-pub trait Timeout {
+pub trait Timeout: Send + 'static {
     fn get_timeout(&self, bytes: u64, retries: usize) -> Duration;
     fn update(&mut self, _: &RequestReport);
     /// get estimated upload speed

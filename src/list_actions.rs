@@ -185,7 +185,7 @@ mod test {
         let s3 = testing_s3_client();
         let dir = rand_string(14);
         const N_FILES: usize = 11_000;
-        let files = (0..N_FILES).map(|i| ObjectSource::Data {
+        let files = (0..N_FILES).map(move |i| ObjectSource::Data {
             data: vec![1, 2, 3],
             key: format!("{}/{}.file", dir, i),
         });

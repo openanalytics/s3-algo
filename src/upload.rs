@@ -29,10 +29,10 @@ pub async fn s3_upload_files<P, C, I, R>(
     default_request: R,
 ) -> Result<(), Error>
 where
-    C: S3 + Clone + Send + Sync + Unpin,
-    P: Fn(RequestReport),
-    I: Iterator<Item = ObjectSource>,
-    R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
+    C: S3 + Clone + Send + Sync + Unpin + 'static,
+    P: Fn(RequestReport) + Send + Sync + 'static,
+    I: Iterator<Item = ObjectSource> + Send + 'static,
+    R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send + 'static,
 {
     let extra_copy_time_s = cfg.extra_copy_time_s;
     let extra_copy_file_time_s = cfg.extra_copy_file_time_s;
