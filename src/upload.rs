@@ -58,10 +58,6 @@ where
     //  adding eventual delays after each file upload and also at the end,
     //  and counting the progress
     stream::iter(jobs)
-        .then(move |x| async move {
-            delay_for(Duration::from_secs(extra_copy_file_time_s)).await;
-            x
-        })
         .buffer_unordered(copy_parallelization)
         .zip(stream::iter(0..))
         .map(|(result, i)| result.map(|result| (i, result)))
@@ -69,10 +65,6 @@ where
             result.seq = i;
             progress(result);
             ok(())
-        })
-        .then(move |x| async move {
-            delay_for(Duration::from_secs(extra_copy_time_s)).await;
-            x
         })
         .await
 }
