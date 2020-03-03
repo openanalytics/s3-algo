@@ -117,7 +117,7 @@ where
                         (t.get_estimate(), t.get_timeout(len, attempts1))
                     };
                     try_stopwatch(
-                        actix_rt::time::timeout(timeout_value, request)
+                        tokio::time::timeout(timeout_value, request)
                             .with_context(|| err::Timeout {})
                             .map(|result| result.and_then(|x| x)), // flatten the Result<Result<(), err>, timeout err>
                     )

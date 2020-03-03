@@ -26,11 +26,6 @@ pub struct UploadConfig {
     /// The minimum timeout (seconds) (always added as an extra term to the
     /// total timeout)
     pub min_timeout: f64,
-    /// For testing/demo purposes, the copy job sleeps for this amount of seconds after copying.
-    pub extra_copy_time_s: u64,
-    /// For testing/demo purposes, the copy job sleeps for this amount of seconds after copying
-    /// each file.
-    pub extra_copy_file_time_s: u64,
 }
 impl Default for UploadConfig {
     fn default() -> Self {
@@ -43,8 +38,6 @@ impl Default for UploadConfig {
             avg_power: 0.7,
             avg_min_bytes: 1_000_000,
             min_timeout: 0.5,
-            extra_copy_time_s: 0,
-            extra_copy_file_time_s: 0,
         }
     }
 }

@@ -194,7 +194,7 @@ mod test {
             "test-bucket".into(),
             files,
             UploadConfig::default(),
-            |result| {
+            |result| async move {
                 if result.seq % 100 == 0 {
                     println!("{} files uploaded", result.seq);
                 }

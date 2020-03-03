@@ -65,7 +65,7 @@ async fn benchmark_s3_upload(
     };
 
     upload_perf_log_init(&mut std::io::stdout());
-    let progress = |res| upload_perf_log_update(&mut std::io::stdout(), res);
+    let progress = |res| async move { upload_perf_log_update(&mut std::io::stdout(), res) };
 
     s3_upload_files(
         s3,

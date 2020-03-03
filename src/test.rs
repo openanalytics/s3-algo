@@ -1,6 +1,10 @@
 use crate::{mock::*, timeout::Timeout, *};
 use rand::Rng;
-use std::{path::Path, sync::Mutex, time::Duration};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tempdir::TempDir;
 use tokio::io::AsyncReadExt;
 
@@ -38,7 +42,7 @@ fn everything_is_sync_and_static() {
     ))
 }
 
-#[actix_rt::test]
+#[tokio::test]
 async fn s3_upload_files_seq_count() {
     const N_FILES: usize = 100;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
@@ -52,16 +56,19 @@ async fn s3_upload_files_seq_count() {
 
     let cli = S3MockRetry::new(2);
 
-    let counter = Mutex::new(0);
+    let counter = Arc::new(Mutex::new(0));
     s3_upload_files(
         cli,
         "any-bucket".into(),
         files_recursive(folder, PathBuf::new()),
         UploadConfig::default(),
         move |res| {
-            let mut counter = counter.lock().unwrap();
-            assert_eq!(*counter, res.seq);
-            *counter += 1;
+            let counter = counter.clone();
+            async move {
+                let mut counter = counter.lock().unwrap();
+                assert_eq!(*counter, res.seq);
+                *counter += 1;
+            }
         },
         PutObjectRequest::default,
     )
@@ -69,7 +76,7 @@ async fn s3_upload_files_seq_count() {
     .unwrap();
 }
 
-#[actix_rt::test]
+#[tokio::test]
 async fn s3_upload_file_attempts_count() {
     const ATTEMPTS: usize = 4;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
@@ -84,14 +91,14 @@ async fn s3_upload_file_attempts_count() {
         "any_bucket".into(),
         files_recursive(path, PathBuf::new()),
         UploadConfig::default(),
-        |result| assert_eq!(result.attempts, ATTEMPTS),
+        |result| async move { assert_eq!(result.attempts, ATTEMPTS) },
         PutObjectRequest::default,
     )
     .await
     .unwrap();
 }
 
-#[actix_rt::test]
+#[tokio::test]
 async fn test_s3_upload_files() {
     const N_FILES: usize = 100;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
@@ -115,7 +122,7 @@ async fn test_s3_upload_files() {
             dir.strip_prefix(tmp_dir.path()).unwrap().to_owned(),
         ),
         UploadConfig::default(),
-        |_| (),
+        |_| async move {},
         PutObjectRequest::default,
     )
     .await

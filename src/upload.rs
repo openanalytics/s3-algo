@@ -20,7 +20,7 @@ use futures::future::ok;
 ///
 /// `default_request` constructs the default request struct - only the fields `bucket`, `key`,
 /// `body` and `content_length` are overwritten by the upload algorithm.
-pub async fn s3_upload_files<P, C, I, R>(
+pub async fn s3_upload_files<P, F, C, I, R>(
     s3: C,
     bucket: String,
     files: I,
@@ -30,12 +30,11 @@ pub async fn s3_upload_files<P, C, I, R>(
 ) -> Result<(), Error>
 where
     C: S3 + Clone + Send + Sync + Unpin + 'static,
-    P: Fn(RequestReport) + Send + Sync + 'static,
+    P: Fn(RequestReport) -> F + Send + Sync + 'static,
+    F: Future<Output = ()> + Send + 'static,
     I: Iterator<Item = ObjectSource> + Send + 'static,
     R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send + 'static,
 {
-    let extra_copy_time_s = cfg.extra_copy_time_s;
-    let extra_copy_file_time_s = cfg.extra_copy_file_time_s;
     let copy_parallelization = cfg.copy_parallelization;
     let n_retries = cfg.n_retries;
 
@@ -63,8 +62,7 @@ where
         .map(|(result, i)| result.map(|result| (i, result)))
         .try_for_each(|(i, (mut result, _))| {
             result.seq = i;
-            progress(result);
-            ok(())
+            progress(result).map(Ok)
         })
         .await
 }
