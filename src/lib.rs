@@ -25,7 +25,6 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::time::delay_for;
 use tokio_util::codec::{BytesCodec, FramedRead};
 
 mod config;
@@ -118,7 +117,7 @@ where
                         (t.get_estimate(), t.get_timeout(len, attempts1))
                     };
                     try_stopwatch(
-                        tokio::time::timeout(timeout_value, request)
+                        actix_rt::time::timeout(timeout_value, request)
                             .with_context(|| err::Timeout {})
                             .map(|result| result.and_then(|x| x)), // flatten the Result<Result<(), err>, timeout err>
                     )

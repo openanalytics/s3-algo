@@ -38,7 +38,7 @@ fn everything_is_sync_and_static() {
     ))
 }
 
-#[tokio::test]
+#[actix_rt::test]
 async fn s3_upload_files_seq_count() {
     const N_FILES: usize = 100;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
@@ -69,7 +69,7 @@ async fn s3_upload_files_seq_count() {
     .unwrap();
 }
 
-#[tokio::test]
+#[actix_rt::test]
 async fn s3_upload_file_attempts_count() {
     const ATTEMPTS: usize = 4;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
@@ -91,7 +91,7 @@ async fn s3_upload_file_attempts_count() {
     .unwrap();
 }
 
-#[tokio::test]
+#[actix_rt::test]
 async fn test_s3_upload_files() {
     const N_FILES: usize = 100;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
