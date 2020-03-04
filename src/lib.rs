@@ -124,7 +124,6 @@ where
                         let t = timeout.lock().unwrap();
                         (t.get_estimate(), t.get_timeout(len, attempts1))
                     };
-                    println!("Timeout: {:?}, Size: {}", timeout_value, len);
                     try_stopwatch(
                         tokio::time::timeout(timeout_value, request)
                             .with_context(|| err::Timeout {})
