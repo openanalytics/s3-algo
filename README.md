@@ -4,11 +4,10 @@ High-performance algorithms for batch operations in Amazon S3, on top of [rusoto
 
 https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html
 
-Currently, uploading multiple files has been the main focus.
-Listing of files and deletion of prefix is also implemented.
-Copying files (S3 to S3) is planned.
+- Upload multiple files with `s3_upload_files`.
+- List files with `s3_list_objects` or `s3_list_prefix`, and then execute deletion or copy on all the files.
 
-This crate is only in its infancy, and we happily welcome PR's or suggestions for improvement of the API.
+This crate is only in its infancy, and we happily welcome PR's, feature requests, suggestions for improvement of the API.
 
 # Running tests and examples
 Both tests and examples require that an S3 service such as `minio` is running locally at port 9000.

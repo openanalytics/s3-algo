@@ -1,10 +1,13 @@
 [package]
 name = "s3-algo"
 description = "High-performance algorithms for batch operations to Amazon S3"
-version = "0.1.11"
+version = "0.1.12"
 authors = ["Erlend Langseth <3rlendhl@gmail.com>"]
 license = "MIT"
 edition = "2018"
+
+documentation = "https://docs.rs/s3-algo/0.1.9/s3_algo/"
+repository = "https://github.com/openanalytics/s3-algo"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

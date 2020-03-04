@@ -6,8 +6,10 @@ use std::{
     time::Duration,
 };
 use tempdir::TempDir;
+use timeout::TimeoutState;
 use tokio::io::AsyncReadExt;
 
+/*
 /// Timeout implementation used for testing
 struct TimeoutState;
 impl Timeout for TimeoutState {
@@ -19,6 +21,7 @@ impl Timeout for TimeoutState {
         0.0
     }
 }
+*/
 
 pub(crate) fn rand_string(n: usize) -> String {
     rand::thread_rng()
@@ -38,7 +41,7 @@ fn everything_is_sync_and_static() {
     verify(s3_request(
         || async move { Ok((async move { Ok(()) }, 0)) },
         5,
-        Arc::new(Mutex::new(TimeoutState)),
+        Arc::new(Mutex::new(TimeoutState::new(UploadConfig::default()))),
     ))
 }
 
@@ -148,35 +151,38 @@ async fn test_s3_upload_files() {
     }
 }
 
-// - and make it delete enough files to trigger paging
-
-/*
 #[tokio::test]
-async fn test_s3_timeout() {
-    // TODO (not sure yet exactly what it's supposed to test)
-    // it simulates some timeout anyway
+async fn test_s3_single_request() {
+    // Test timeout of a single request - that it is not too low
+
+    const ACTUAL_SPEED: f32 = 5_000_000.0; // bytes per sec
+    const SIZE: u64 = 5_000_000;
     let dir = tempdir::TempDir::new("testing").unwrap();
     let path = dir.path().join("file.txt");
     std::fs::write(&path, "file contents").unwrap();
 
-    let timeout = Arc::new(Mutex::new(TimeoutState));
-    let cli = S3MockTimeout::new(1);
-    let result = s3_request(
-        |attempts| {
-            stream_file_to_s3(
-                cli.clone(),
-                path.clone(),
-                "testing".into(),
-                "hey".into(),
-                timeout.clone(),
-                attempts,
-                PutObjectRequest::default,
-            )
+    let cli = S3MockTimeout::new(ACTUAL_SPEED);
+    let result = s3_single_request(
+        move || {
+            let cli = cli.clone();
+            async move {
+                cli.put_object(PutObjectRequest {
+                    bucket: "testing".into(),
+                    key: "hey".into(),
+                    body: Some(vec![].into()),
+                    content_length: Some(SIZE as i64),
+                    ..Default::default()
+                })
+                .map_ok(drop)
+                .await
+                .context(err::PutObject {
+                    key: "hey".to_string(),
+                })
+            }
         },
-        10,
+        Some(SIZE),
     )
     .await;
 
-    println!("{:?}", result.unwrap());
+    let _ = result.unwrap();
 }
-*/

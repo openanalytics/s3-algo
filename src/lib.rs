@@ -3,9 +3,9 @@
 //!
 //! https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html
 //!
-//! Until now, uploading multiple files has been the main focus.
-//! Deletion of prefix is also implemented.
-//! Listing of files is planned.
+//! - Upload multiple files with [`s3_upload_files`](s3_upload_files).
+//! - List files with [`s3_list_objects`](s3_list_objects) or [`s3_list_prefix`](s3_list_prefix),
+//! and then execute deletion or copy on all the files.
 
 use crate::timeout::*;
 use futures::{
@@ -62,15 +62,23 @@ pub struct RequestReport {
 }
 
 /// Issue a single S3 request, with retries and appropriate timeouts using sane defaults.
-pub async fn s3_single_request<F, G, R>(future_factory: F) -> Result<(RequestReport, R), Error>
+/// Basically an easier, less general version of `s3_request`.
+/// `size` should be given if the operation is on a file with a certain size. This is necessary in
+/// order to set a suitable timeout to the request. For example, copy or put operations are linear
+/// in the size of the files operated on.
+pub async fn s3_single_request<F, G, R>(
+    future_factory: F,
+    size: Option<u64>,
+) -> Result<(RequestReport, R), Error>
 where
     F: Fn() -> G + Unpin + Clone + Send + Sync + 'static,
     G: Future<Output = Result<R, Error>> + Send,
 {
+    let size = size.unwrap_or(0);
     s3_request(
         move || {
             let factory = future_factory.clone();
-            async move { Ok((factory(), 0)) }
+            async move { Ok((factory(), size)) }
         },
         10,
         Arc::new(Mutex::new(TimeoutState::new(UploadConfig::default()))),
@@ -116,6 +124,7 @@ where
                         let t = timeout.lock().unwrap();
                         (t.get_estimate(), t.get_timeout(len, attempts1))
                     };
+                    println!("Timeout: {:?}, Size: {}", timeout_value, len);
                     try_stopwatch(
                         tokio::time::timeout(timeout_value, request)
                             .with_context(|| err::Timeout {})
@@ -171,9 +180,4 @@ pub fn testing_s3_client() -> S3Client {
     profile.set_profile("testing");
 
     rusoto_s3::S3Client::new_with(client, profile, region)
-}
-
-/// Just for convenience: to provide as `path_to_key` for `s3_upload_files`
-pub fn strip_prefix<P: AsRef<Path>>(prefix: P) -> impl Fn(&Path) -> PathBuf {
-    move |path| path.strip_prefix(prefix.as_ref()).unwrap().to_path_buf()
 }

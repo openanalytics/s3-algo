@@ -1552,27 +1552,23 @@ impl S3WithDefaults for S3MockRetry {
 }
 
 // TODO https://github.com/rusoto/rusoto/issues/1546
-/// Only defines `put_object`, failing `max_fails` times before succeeding, where 'failing' means
-/// taking an eternity
+/// Simulates that an operation actually takes some time to complete (only supports put_object)
+/// based on the content_length field.
 #[derive(Clone, Debug)]
 pub struct S3MockTimeout {
-    max_fails: usize,
-    fails: Arc<Mutex<usize>>,
+    bps: f32,
 }
 impl S3MockTimeout {
-    #[allow(unused)] // waiting for issue..
-    pub fn new(max_fails: usize) -> S3MockTimeout {
-        S3MockTimeout {
-            max_fails,
-            fails: Arc::new(Mutex::new(0)),
-        }
+    /// `bps`: bytes per sec
+    pub fn new(bps: f32) -> S3MockTimeout {
+        S3MockTimeout { bps }
     }
 }
 #[trait_impl]
 impl S3WithDefaults for S3MockTimeout {
     fn put_object<'life0, 'async_trait>(
         &'life0 self,
-        _input: PutObjectRequest,
+        input: PutObjectRequest,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<PutObjectOutput, RusotoError<PutObjectError>>>
@@ -1584,21 +1580,11 @@ impl S3WithDefaults for S3MockTimeout {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        let curr_fails = *self.fails.lock().unwrap();
-        println!("Curr fails: {}", curr_fails);
-        if curr_fails == self.max_fails {
-            // succeed
-            Box::pin(async move { Ok(PutObjectOutput::default()) })
-        } else {
-            // fail
-            *self.fails.lock().unwrap() += 1;
-            Box::pin(async move {
-                delay_for(Duration::from_secs(10)).await;
-                println!("Delay for 10 sec?");
-                Err(RusotoError::HttpDispatch(request::HttpDispatchError::new(
-                    "timeout".into(),
-                )))
-            })
-        }
+        // succeed
+        let seconds = input.content_length.unwrap_or(0) as f32 / self.bps;
+        Box::pin(async move {
+            delay_for(Duration::from_millis((seconds * 1000.0) as u64)).await;
+            Ok(PutObjectOutput::default())
+        })
     }
 }

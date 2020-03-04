@@ -1,14 +1,10 @@
 use super::*;
-use futures::future::ok;
 
 /// Upload multiple files to S3.
 ///
-/// `path_to_key` is a function that converts a file path to the key it should have in S3.
-/// The provided `strip_prefix` function should cover most use cases.
-///
 /// `s3_upload_files` provides counting of uploaded files and bytes through the `progress` closure:
 ///
-/// For common use cases it is adviced to use `files_recursive` as `files`.
+/// For common use cases it is adviced to use [`files_recursive`](files_recursive) for the `files` parameter.
 ///
 /// `progress` will be called after the upload of each file, with some data about that upload.
 /// The first `usize` parameter is the number of this file in the upload, while [`RequestReport`](struct.RequestReport.html)
@@ -145,6 +141,10 @@ impl ObjectSource {
     }
 }
 
+/// Convenience function (using `walkdir`) to traverse all files in directory `src_dir`. Returns an
+/// iterator that can be used as input to [`s3_upload_files`](s3_upload_files), which uploads files
+/// with a key equal to the file's path with `src_dir` stripped away, and with `key_prefix`
+/// prepended.
 pub fn files_recursive(
     src_dir: PathBuf,
     key_prefix: PathBuf,
