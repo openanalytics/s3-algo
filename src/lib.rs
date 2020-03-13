@@ -22,9 +22,10 @@ use snafu::ResultExt;
 use std::{
     marker::Unpin,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
+use tokio::sync::Mutex;
 use tokio_util::codec::{BytesCodec, FramedRead};
 
 mod config;
@@ -121,7 +122,7 @@ where
                     attempts1 += 1;
                     let (request, len) = future_factory().await?;
                     let (est, timeout_value) = {
-                        let t = timeout.lock().unwrap();
+                        let t = timeout.lock().await;
                         (t.get_estimate(), t.get_timeout(len, attempts1))
                     };
                     try_stopwatch(

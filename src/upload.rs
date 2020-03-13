@@ -26,7 +26,7 @@ pub async fn s3_upload_files<P, F, C, I, R>(
 ) -> Result<(), Error>
 where
     C: S3 + Clone + Send + Sync + Unpin + 'static,
-    P: Fn(RequestReport) -> F + Send + Sync + 'static,
+    P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
     F: Future<Output = ()> + Send + 'static,
     I: Iterator<Item = ObjectSource> + Send + 'static,
     R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send + 'static,
@@ -35,6 +35,7 @@ where
     let n_retries = cfg.n_retries;
 
     let timeout_state = Arc::new(Mutex::new(TimeoutState::new(cfg)));
+    let timeout_state2 = timeout_state.clone();
 
     let jobs = files.map(move |src| {
         let (default, bucket, s3) = (default_request.clone(), bucket.clone(), s3.clone());
@@ -56,9 +57,14 @@ where
         .buffer_unordered(copy_parallelization)
         .zip(stream::iter(0..))
         .map(|(result, i)| result.map(|result| (i, result)))
-        .try_for_each(|(i, (mut result, _))| {
-            result.seq = i;
-            progress(result).map(Ok)
+        .try_for_each(move |(i, (mut result, _))| {
+            let progress = progress.clone();
+            let timeout_state = timeout_state2.clone();
+            async move {
+                result.seq = i;
+                timeout_state.lock().await.update(&result);
+                progress(result).map(Ok).await
+            }
         })
         .await
 }
