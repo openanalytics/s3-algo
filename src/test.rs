@@ -1,13 +1,10 @@
-use crate::{mock::*, timeout::Timeout, *};
+use crate::{mock::*, *};
 use rand::Rng;
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{path::Path, sync::Arc};
 use tempdir::TempDir;
 use timeout::TimeoutState;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex;
 
 /*
 /// Timeout implementation used for testing
@@ -68,7 +65,7 @@ async fn s3_upload_files_seq_count() {
         move |res| {
             let counter = counter.clone();
             async move {
-                let mut counter = counter.lock().unwrap();
+                let mut counter = counter.lock().await;
                 assert_eq!(*counter, res.seq);
                 *counter += 1;
             }
@@ -161,7 +158,7 @@ async fn test_s3_single_request() {
     let path = dir.path().join("file.txt");
     std::fs::write(&path, "file contents").unwrap();
 
-    let cli = S3MockTimeout::new(ACTUAL_SPEED);
+    let cli = S3MockBps::new(ACTUAL_SPEED);
     let result = s3_single_request(
         move || {
             let cli = cli.clone();
@@ -185,4 +182,36 @@ async fn test_s3_single_request() {
     .await;
 
     let _ = result.unwrap();
+}
+
+#[tokio::test]
+async fn test_s3_timeouts() {
+    // TODO finish test
+    // Currently just prints things to inspect how timeout behaves
+
+    let bytes: Vec<u64> = vec![500_000, 999_999, 1_000_001, 2_000_000];
+    // Test that timeout on successive errors follows a desired curve
+    
+    // These are all parameters related to timeout, shown explicitly
+    let cfg = UploadConfig {
+        expected_upload_speed: 1.0,
+        backoff: 1.5,
+        avg_min_bytes: 1_000_000,
+        min_timeout: 0.5,
+        timeout_fraction: 1.5,
+        avg_power: 0.7,
+        ..Default::default()
+    };
+
+    for bytes in bytes {
+        println!("# Bytes = {}", bytes);
+        let timeout = TimeoutState::new(cfg.clone());
+
+        let timeouts = (1..=10).map(|retries| {
+            timeout.get_timeout(bytes, retries)
+        })
+        .collect::<Vec<_>>();
+        println!("{:?}", timeouts);
+    }
+
 }

@@ -32,7 +32,7 @@ impl Default for UploadConfig {
         Self {
             copy_parallelization: 20,
             timeout_fraction: 1.5,
-            backoff: 1.3,
+            backoff: 1.5,
             n_retries: 8,
             expected_upload_speed: 1.0,
             avg_power: 0.7,

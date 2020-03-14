@@ -1555,17 +1555,17 @@ impl S3WithDefaults for S3MockRetry {
 /// Simulates that an operation actually takes some time to complete (only supports put_object)
 /// based on the content_length field.
 #[derive(Clone, Debug)]
-pub struct S3MockTimeout {
+pub struct S3MockBps {
     bps: f32,
 }
-impl S3MockTimeout {
+impl S3MockBps {
     /// `bps`: bytes per sec
-    pub fn new(bps: f32) -> S3MockTimeout {
-        S3MockTimeout { bps }
+    pub fn new(bps: f32) -> S3MockBps {
+        S3MockBps { bps }
     }
 }
 #[trait_impl]
-impl S3WithDefaults for S3MockTimeout {
+impl S3WithDefaults for S3MockBps {
     fn put_object<'life0, 'async_trait>(
         &'life0 self,
         input: PutObjectRequest,

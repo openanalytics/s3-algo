@@ -21,7 +21,7 @@ use snafu::futures::TryFutureExt as S;
 use snafu::ResultExt;
 use std::{
     marker::Unpin,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
