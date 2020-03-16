@@ -1,6 +1,10 @@
 use crate::{mock::*, *};
 use rand::Rng;
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tempdir::TempDir;
 use timeout::TimeoutState;
 use tokio::io::AsyncReadExt;
@@ -191,7 +195,7 @@ async fn test_s3_timeouts() {
 
     let bytes: Vec<u64> = vec![500_000, 999_999, 1_000_001, 2_000_000];
     // Test that timeout on successive errors follows a desired curve
-    
+
     // These are all parameters related to timeout, shown explicitly
     let cfg = UploadConfig {
         expected_upload_speed: 1.0,
@@ -207,11 +211,31 @@ async fn test_s3_timeouts() {
         println!("# Bytes = {}", bytes);
         let timeout = TimeoutState::new(cfg.clone());
 
-        let timeouts = (1..=10).map(|retries| {
-            timeout.get_timeout(bytes, retries)
-        })
-        .collect::<Vec<_>>();
+        let timeouts = (1..=10)
+            .map(|retries| timeout.get_timeout(bytes, retries))
+            .collect::<Vec<_>>();
         println!("{:?}", timeouts);
     }
+}
 
+#[tokio::test]
+async fn test_delete_files_parallelization() {
+    // List 10 pages of file - each listing takes 100ms,
+    // and delete pages in parallel (100ms per page)
+
+    let cli = S3MockListAndDelete::new(Duration::from_millis(100), Duration::from_millis(100), 10);
+
+    let start = Instant::now();
+    s3_list_prefix(cli, "test-bucket".to_string(), "some/prefix".to_string())
+        .delete_all()
+        .await
+        .unwrap();
+    let duration = Instant::now() - start;
+    println!("Duration: {}", duration.as_millis());
+
+    // In the case that listing and deleting is not parallelized, we will have at least 20 requests
+    // each of 100ms:
+    assert!(duration.as_millis() < 2000);
+    // TODO: I think this now passes because delete operations are concurrent, but I'm unsure if
+    //
 }

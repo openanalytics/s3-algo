@@ -19,12 +19,7 @@ use rusoto_core::{ByteStream, RusotoError};
 use rusoto_s3::*;
 use snafu::futures::TryFutureExt as S;
 use snafu::ResultExt;
-use std::{
-    marker::Unpin,
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use std::{marker::Unpin, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use tokio_util::codec::{BytesCodec, FramedRead};
 

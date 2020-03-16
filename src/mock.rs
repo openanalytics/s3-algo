@@ -1,11 +1,9 @@
 use crate::*;
 use multi_default_trait_impl::{default_trait_impl, trait_impl};
 use rusoto_core::*;
-use std::{
-    pin::Pin,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use rusoto_s3::*;
+use std::{pin::Pin, sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 use tokio::time::delay_for;
 // Just to be able to easily create mock objects, we create a temporary trait with defaults that
 // panic
@@ -1535,19 +1533,20 @@ impl S3WithDefaults for S3MockRetry {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        let curr_fails = *self.fails.lock().unwrap();
-        if curr_fails == self.max_fails {
-            // succeed
-            Box::pin(async move { Ok(PutObjectOutput::default()) })
-        } else {
-            // fail
-            *self.fails.lock().unwrap() += 1;
-            Box::pin(async move {
+        let s = self.clone();
+        Box::pin(async move {
+            let curr_fails = *s.fails.lock().await;
+            if curr_fails == s.max_fails {
+                // succeed
+                Ok(PutObjectOutput::default())
+            } else {
+                // fail
+                *s.fails.lock().await += 1;
                 Err(RusotoError::HttpDispatch(request::HttpDispatchError::new(
                     "timeout".into(),
                 )))
-            })
-        }
+            }
+        })
     }
 }
 
@@ -1585,6 +1584,97 @@ impl S3WithDefaults for S3MockBps {
         Box::pin(async move {
             delay_for(Duration::from_millis((seconds * 1000.0) as u64)).await;
             Ok(PutObjectOutput::default())
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct S3MockListAndDelete {
+    list_time: Duration,
+    delete_time: Duration,
+    n_list_requests: usize,
+    n: Arc<Mutex<usize>>,
+    files_per_request: usize,
+}
+impl S3MockListAndDelete {
+    pub fn new(list_time: Duration, delete_time: Duration, n_list_requests: usize) -> Self {
+        Self {
+            list_time,
+            delete_time,
+            n_list_requests,
+            n: Arc::new(Mutex::new(0)),
+            files_per_request: 10,
+        }
+    }
+}
+
+#[trait_impl]
+impl S3WithDefaults for S3MockListAndDelete {
+    fn list_objects_v2<'life0, 'async_trait>(
+        &'life0 self,
+        input: ListObjectsV2Request,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<ListObjectsV2Output, RusotoError<ListObjectsV2Error>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        let s = self.clone();
+        Box::pin(async move {
+            let next_continuation_token = {
+                let mut n = s.n.lock().await;
+                *n += 1;
+                if *n >= s.n_list_requests {
+                    None
+                } else {
+                    Some(String::new())
+                }
+            };
+            let list_time = s.list_time.clone();
+            let response = ListObjectsV2Output {
+                next_continuation_token,
+                contents: Some(
+                    (0..s.files_per_request)
+                        .map(|i| Object {
+                            key: Some(format!("key{}", i)),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            };
+            delay_for(list_time).await;
+            Ok(response)
+        })
+    }
+
+    fn delete_objects<'life0, 'async_trait>(
+        &'life0 self,
+        input: DeleteObjectsRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<DeleteObjectsOutput, RusotoError<DeleteObjectsError>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        let s = self.clone();
+        Box::pin(async move {
+            delay_for(s.delete_time).await;
+            Ok(DeleteObjectsOutput {
+                deleted: Some(vec![]), // ignored for now as it is not used
+                errors: None,
+                request_charged: None,
+            })
         })
     }
 }
