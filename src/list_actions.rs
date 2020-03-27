@@ -23,7 +23,12 @@ where
 {
     pub fn delete_all(self) -> impl Future<Output = Result<(), Error>> {
         // For each ListObjectsV2Output, send a request to delete all the listed objects
-        let ListObjects { s3, config, bucket, stream } = self;
+        let ListObjects {
+            s3,
+            config,
+            bucket,
+            stream,
+        } = self;
         stream
             .filter_map(|response| ready(response.map(|r| r.contents).transpose()))
             .context(err::ListObjectsV2)
@@ -72,7 +77,12 @@ where
     where
         F: Fn(String) -> String + Clone + Send + Sync + Unpin + 'static,
     {
-        let ListObjects { s3, config, bucket, stream } = self;
+        let ListObjects {
+            s3,
+            config,
+            bucket,
+            stream,
+        } = self;
         let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request.clone())));
         let dest_bucket = dest_bucket.unwrap_or_else(|| bucket.clone());
         stream
@@ -81,50 +91,28 @@ where
             .try_flatten()
             .try_filter_map(|obj| {
                 // Just filter out any object that does not have both of `key` and `size`
-                let Object {key, size, ..} = obj;
+                let Object { key, size, .. } = obj;
                 ok(key.and_then(|key| size.map(|size| (key, size))))
             })
             .context(err::ListObjectsV2)
             .try_for_each(move |(key, size)| {
-                let (s3, src_bucket, dest_bucket, mapping, timeout) = (
-                    s3.clone(),
-                    bucket.clone(),
-                    dest_bucket.clone(),
-                    mapping.clone(),
-                    timeout.clone(),
-                );
+                let (s3, timeout) = (s3.clone(), timeout.clone());
+                let request = CopyObjectRequest {
+                    copy_source: format!("{}/{}", bucket, key),
+                    bucket: dest_bucket.clone(),
+                    key: mapping(key),
+                    ..Default::default()
+                };
                 s3_request(
                     move || {
-                        let (s3, src_bucket, dest_bucket, key, mapping) = (
-                            s3.clone(),
-                            src_bucket.clone(),
-                            dest_bucket.clone(),
-                            key.clone(),
-                            mapping.clone(),
-                        );
+                        let (s3, request) = (s3.clone(), request.clone());
                         async move {
-                            let (s3, src_bucket, dest_bucket, key, mapping) = (
-                                s3.clone(),
-                                src_bucket.clone(),
-                                dest_bucket.clone(),
-                                key.clone(),
-                                mapping.clone(),
-                            );
-                            let request = async move {
-                                s3.copy_object(CopyObjectRequest {
-                                    copy_source: format!("{}/{}", src_bucket, key),
-                                    bucket: dest_bucket,
-                                    key: mapping(key),
-                                    ..Default::default()
-                                })
-                                .context(err::CopyObject)
-                                    .await
-                            };
-                            Ok((request, size as u64))
+                            let (s3, request) = (s3.clone(), request.clone());
+                            Ok((async move{s3.copy_object(request).context(err::CopyObject).await}, size as u64))
                         }
                     },
                     10,
-                    timeout
+                    timeout,
                 )
                 .map_ok(drop)
             })
@@ -236,7 +224,12 @@ impl<S: S3 + Clone + Send + Sync + 'static> S3Algo<S> {
                 }
             },
         );
-        ListObjects { s3: self.s3.clone(), config: self.config.clone(), stream, bucket }
+        ListObjects {
+            s3: self.s3.clone(),
+            config: self.config.clone(),
+            stream,
+            bucket,
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 //! The `Timeout` trait defines the how the timeout value of a multi-file upload evolves based on
 //! past file upload results. A default implementation `TimeoutState` is provided.
-use crate::{RequestReport, RequestConfig};
+use crate::{RequestConfig, RequestReport};
 use std::time::Duration;
 pub trait Timeout: Send + 'static {
     fn get_timeout(&self, bytes: u64, retries: usize) -> Duration;

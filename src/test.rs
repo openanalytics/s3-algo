@@ -108,7 +108,9 @@ async fn test_s3_upload_files() {
     let tmp_dir = TempDir::new("s3-testing").unwrap();
 
     let s3 = testing_s3_client();
-    let dir_key = upload_test_files(s3.clone(), tmp_dir.path(), N_FILES).await.unwrap();
+    let dir_key = upload_test_files(s3.clone(), tmp_dir.path(), N_FILES)
+        .await
+        .unwrap();
 
     // Check that all files are there
     for i in 0..N_FILES {
@@ -220,7 +222,11 @@ async fn test_delete_files_parallelization() {
 }
 
 /// Returns the common prefix of all files in S3
-async fn upload_test_files<S: S3 + Clone + Send + Sync + Unpin + 'static>(s3: S, parent: &Path, n_files: usize) -> Result<PathBuf, Error> {
+async fn upload_test_files<S: S3 + Clone + Send + Sync + Unpin + 'static>(
+    s3: S,
+    parent: &Path,
+    n_files: usize,
+) -> Result<PathBuf, Error> {
     let dir_key = Path::new(&rand_string(4))
         .join(rand_string(4))
         .join(rand_string(4));
@@ -234,10 +240,7 @@ async fn upload_test_files<S: S3 + Clone + Send + Sync + Unpin + 'static>(s3: S,
     s3_upload_files(
         s3,
         "test-bucket".into(),
-        files_recursive(
-            dir.clone(),
-            dir.strip_prefix(parent).unwrap().to_owned(),
-        ),
+        files_recursive(dir.clone(), dir.strip_prefix(parent).unwrap().to_owned()),
         UploadConfig::default(),
         |_| async move {},
         PutObjectRequest::default,
@@ -252,19 +255,26 @@ async fn test_move_files() {
     const N_FILES: usize = 100;
     let s3 = testing_s3_client();
     let tmp_dir = TempDir::new("s3-testing").unwrap();
-    let prefix = upload_test_files(s3.clone(), tmp_dir.path(), N_FILES).await.unwrap();
+    let prefix = upload_test_files(s3.clone(), tmp_dir.path(), N_FILES)
+        .await
+        .unwrap();
     let new_prefix = PathBuf::from("haha/lala");
 
-    s3_list_prefix(s3.clone(), "test-bucket".into(), format!("{}", prefix.display()))
-        .copy_all(|key| {
+    s3_list_prefix(
+        s3.clone(),
+        "test-bucket".into(),
+        format!("{}", prefix.display()),
+    )
+    .copy_all(
+        |key| {
             let key = PathBuf::from(key);
             let name = key.file_name().unwrap();
             format!("{}/{}", new_prefix.display(), name.to_str().unwrap())
-        }, None)
-        .await
-        .unwrap()
-    ;
-
+        },
+        None,
+    )
+    .await
+    .unwrap();
 
     // Check that all files are under `new_prefix` and not under `prefix`
     for i in 0..N_FILES {
@@ -283,7 +293,5 @@ async fn test_move_files() {
             ..Default::default()
         });
         let _ = response.await.unwrap_err();
-
     }
 }
-
