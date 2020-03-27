@@ -12,17 +12,18 @@ pub type ListObjectsV2Result = Result<ListObjectsV2Output, RusotoError<ListObjec
 /// A stream that can list objects, and (using member functions) delete or copy listed files.
 pub struct ListObjects<C, S> {
     s3: C,
+    config: Config,
     bucket: String,
     stream: S,
 }
 impl<C, S> ListObjects<C, S>
 where
-    C: S3 + Clone + Send,
+    C: S3 + Clone + Send + Sync + Unpin + 'static,
     S: Stream<Item = ListObjectsV2Result> + Sized + Send,
 {
     pub fn delete_all(self) -> impl Future<Output = Result<(), Error>> {
         // For each ListObjectsV2Output, send a request to delete all the listed objects
-        let ListObjects { s3, bucket, stream } = self;
+        let ListObjects { s3, config, bucket, stream } = self;
         stream
             .filter_map(|response| ready(response.map(|r| r.contents).transpose()))
             .context(err::ListObjectsV2)
@@ -63,16 +64,77 @@ where
     /// Copy all listed objects, to a different S3 location as defined in `mapping` and
     /// `dest_bucket`.
     /// If `other_bucket` is not provided, copy to same bucket
-    // NOTE: first draft
-    // TODO: test
     pub fn copy_all<F>(
         self,
         mapping: F,
         dest_bucket: Option<String>,
     ) -> impl Future<Output = Result<(), Error>>
     where
-        F: Fn(String) -> String + Clone,
+        F: Fn(String) -> String + Clone + Send + Sync + Unpin + 'static,
     {
+        let ListObjects { s3, config, bucket, stream } = self;
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request.clone())));
+        let dest_bucket = dest_bucket.unwrap_or_else(|| bucket.clone());
+        stream
+            .try_filter_map(|response| ok(response.contents))
+            .map_ok(|x| stream::iter(x).map(Ok))
+            .try_flatten()
+            .try_filter_map(|obj| {
+                // Just filter out any object that does not have both of `key` and `size`
+                let Object {key, size, ..} = obj;
+                ok(key.and_then(|key| size.map(|size| (key, size))))
+            })
+            .context(err::ListObjectsV2)
+            .try_for_each(move |(key, size)| {
+                let (s3, src_bucket, dest_bucket, mapping, timeout) = (
+                    s3.clone(),
+                    bucket.clone(),
+                    dest_bucket.clone(),
+                    mapping.clone(),
+                    timeout.clone(),
+                );
+                s3_request(
+                    move || {
+                        let (s3, src_bucket, dest_bucket, key, mapping) = (
+                            s3.clone(),
+                            src_bucket.clone(),
+                            dest_bucket.clone(),
+                            key.clone(),
+                            mapping.clone(),
+                        );
+                        async move {
+                            let (s3, src_bucket, dest_bucket, key, mapping) = (
+                                s3.clone(),
+                                src_bucket.clone(),
+                                dest_bucket.clone(),
+                                key.clone(),
+                                mapping.clone(),
+                            );
+                            let request = async move {
+                                s3.copy_object(CopyObjectRequest {
+                                    copy_source: format!("{}/{}", src_bucket, key),
+                                    bucket: dest_bucket,
+                                    key: mapping(key),
+                                    ..Default::default()
+                                })
+                                .context(err::CopyObject)
+                                    .await
+                            };
+                            Ok((request, size as u64))
+                        }
+                    },
+                    10,
+                    timeout
+                )
+                .map_ok(drop)
+            })
+    }
+    // TODO: Is it possible to change copy_all so that we can move_all by just chaining copy_all
+    // and delete_all? Then copy_all would need to return a stream of old keys, but does that make
+    // sense in general?
+    // For now, this is code duplication.
+    /*
+    pub fn move_all<F>(
         let ListObjects { s3, bucket, stream } = self;
         let dest_bucket = dest_bucket.unwrap_or_else(|| bucket.clone());
         stream
@@ -88,6 +150,7 @@ where
                     dest_bucket.clone(),
                     mapping.clone(),
                 );
+
                 async move {
                     s3.copy_object(CopyObjectRequest {
                         copy_source: format!("{}/{}", src_bucket, key),
@@ -97,10 +160,12 @@ where
                     })
                     .map_ok(drop)
                     .context(err::CopyObject)
-                    .await
+                    .await;
+                    Ok(())
                 }
             })
-    }
+        )
+    */
 }
 
 impl<C, S> Stream for ListObjects<C, S>
@@ -114,64 +179,65 @@ where
     }
 }
 
-/// List all objects with a certain prefix
-pub fn s3_list_prefix<C: S3 + Clone + Send + Sync>(
-    s3: C,
-    bucket: String,
-    prefix: String,
-) -> ListObjects<C, impl Stream<Item = ListObjectsV2Result> + Sized + Send> {
-    let bucket1 = bucket.clone();
-    s3_list_objects(s3, bucket, move || ListObjectsV2Request {
-        bucket: bucket1.clone(),
-        prefix: Some(prefix.clone()),
-        ..Default::default()
-    })
-}
+impl<S: S3 + Clone + Send + Sync + 'static> S3Algo<S> {
+    /// List all objects with a certain prefix
+    pub fn list_prefix(
+        &self,
+        bucket: String,
+        prefix: String,
+    ) -> ListObjects<S, impl Stream<Item = ListObjectsV2Result> + Sized + Send> {
+        let bucket1 = bucket.clone();
+        self.list_objects(bucket, move || ListObjectsV2Request {
+            bucket: bucket1.clone(),
+            prefix: Some(prefix.clone()),
+            ..Default::default()
+        })
+    }
 
-/// List all objects given a request factory.
-/// Paging is taken care of, so you need not fill in `continuation_token` in the
-/// `ListObjectsV2Request`.
-///
-/// `bucket` is only needed for eventual further operations on `ListObjects`.
-pub fn s3_list_objects<C, F>(
-    s3: C,
-    bucket: String,
-    request_factory: F,
-) -> ListObjects<C, impl Stream<Item = ListObjectsV2Result> + Sized + Send>
-where
-    C: S3 + Clone + Send + Sync,
-    F: Fn() -> ListObjectsV2Request + Send + Sync + Clone,
-{
-    let s3_1 = s3.clone();
-    let stream = futures::stream::unfold(
-        // Initial state = (next continuation token, first request)
-        (None, true),
-        // Transformation
-        //    - the stream will yield ListObjectsV2Output
-        //      and stop when there is nothing left to list
-        move |(cont, first)| {
-            let (s3, request_factory) = (s3_1.clone(), request_factory.clone());
-            async move {
-                if let (&None, false) = (&cont, first) {
-                    None
-                } else {
-                    let result = s3
-                        .list_objects_v2(ListObjectsV2Request {
-                            continuation_token: cont,
-                            ..request_factory()
-                        })
-                        .await;
-                    let next_cont = if let Ok(ref response) = result {
-                        response.next_continuation_token.clone()
-                    } else {
+    /// List all objects given a request factory.
+    /// Paging is taken care of, so you need not fill in `continuation_token` in the
+    /// `ListObjectsV2Request`.
+    ///
+    /// `bucket` is only needed for eventual further operations on `ListObjects`.
+    pub fn list_objects<F>(
+        &self,
+        bucket: String,
+        request_factory: F,
+    ) -> ListObjects<S, impl Stream<Item = ListObjectsV2Result> + Sized + Send>
+    where
+        F: Fn() -> ListObjectsV2Request + Send + Sync + Clone,
+    {
+        let s3_1 = self.s3.clone();
+        let stream = futures::stream::unfold(
+            // Initial state = (next continuation token, first request)
+            (None, true),
+            // Transformation
+            //    - the stream will yield ListObjectsV2Output
+            //      and stop when there is nothing left to list
+            move |(cont, first)| {
+                let (s3, request_factory) = (s3_1.clone(), request_factory.clone());
+                async move {
+                    if let (&None, false) = (&cont, first) {
                         None
-                    };
-                    Some((result, (next_cont, false)))
+                    } else {
+                        let result = s3
+                            .list_objects_v2(ListObjectsV2Request {
+                                continuation_token: cont,
+                                ..request_factory()
+                            })
+                            .await;
+                        let next_cont = if let Ok(ref response) = result {
+                            response.next_continuation_token.clone()
+                        } else {
+                            None
+                        };
+                        Some((result, (next_cont, false)))
+                    }
                 }
-            }
-        },
-    );
-    ListObjects { s3, stream, bucket }
+            },
+        );
+        ListObjects { s3: self.s3.clone(), config: self.config.clone(), stream, bucket }
+    }
 }
 
 #[cfg(test)]

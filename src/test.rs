@@ -107,30 +107,8 @@ async fn test_s3_upload_files() {
     const N_FILES: usize = 100;
     let tmp_dir = TempDir::new("s3-testing").unwrap();
 
-    let dir_key = Path::new(&rand_string(4))
-        .join(rand_string(4))
-        .join(rand_string(4));
-    let dir = tmp_dir.path().join(&dir_key);
-    std::fs::create_dir_all(&dir).unwrap();
-    for i in 0..N_FILES {
-        std::fs::write(dir.join(format!("img_{}.tif", i)), "file contents").unwrap();
-    }
-
     let s3 = testing_s3_client();
-    println!("Upload {} to {:?} ", dir.display(), dir_key);
-    s3_upload_files(
-        s3.clone(),
-        "test-bucket".into(),
-        files_recursive(
-            dir.clone(),
-            dir.strip_prefix(tmp_dir.path()).unwrap().to_owned(),
-        ),
-        UploadConfig::default(),
-        |_| async move {},
-        PutObjectRequest::default,
-    )
-    .await
-    .unwrap();
+    let dir_key = upload_test_files(s3.clone(), tmp_dir.path(), N_FILES).await.unwrap();
 
     // Check that all files are there
     for i in 0..N_FILES {
@@ -237,5 +215,75 @@ async fn test_delete_files_parallelization() {
     // each of 100ms:
     assert!(duration.as_millis() < 2000);
     // TODO: I think this now passes because delete operations are concurrent, but I'm unsure if
+    // listing and deletion are concurrent wrt each other. TODO: take a look at `parallel_stream`
     //
 }
+
+/// Returns the common prefix of all files in S3
+async fn upload_test_files<S: S3 + Clone + Send + Sync + Unpin + 'static>(s3: S, parent: &Path, n_files: usize) -> Result<PathBuf, Error> {
+    let dir_key = Path::new(&rand_string(4))
+        .join(rand_string(4))
+        .join(rand_string(4));
+    let dir = parent.join(&dir_key);
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..n_files {
+        std::fs::write(dir.join(format!("img_{}.tif", i)), "file contents").unwrap();
+    }
+
+    println!("Upload {} to {:?} ", dir.display(), dir_key);
+    s3_upload_files(
+        s3,
+        "test-bucket".into(),
+        files_recursive(
+            dir.clone(),
+            dir.strip_prefix(parent).unwrap().to_owned(),
+        ),
+        UploadConfig::default(),
+        |_| async move {},
+        PutObjectRequest::default,
+    )
+    .await?;
+    Ok(dir_key)
+}
+
+#[tokio::test]
+async fn test_move_files() {
+    // Half test, half example: how to move files (copy, then delete)
+    const N_FILES: usize = 100;
+    let s3 = testing_s3_client();
+    let tmp_dir = TempDir::new("s3-testing").unwrap();
+    let prefix = upload_test_files(s3.clone(), tmp_dir.path(), N_FILES).await.unwrap();
+    let new_prefix = PathBuf::from("haha/lala");
+
+    s3_list_prefix(s3.clone(), "test-bucket".into(), format!("{}", prefix.display()))
+        .copy_all(|key| {
+            let key = PathBuf::from(key);
+            let name = key.file_name().unwrap();
+            format!("{}/{}", new_prefix.display(), name.to_str().unwrap())
+        }, None)
+        .await
+        .unwrap()
+    ;
+
+
+    // Check that all files are under `new_prefix` and not under `prefix`
+    for i in 0..N_FILES {
+        let key = new_prefix.join(format!("img_{}.tif", i));
+        let response = s3.get_object(GetObjectRequest {
+            bucket: "test-bucket".to_string(),
+            key: key.to_str().unwrap().to_string(),
+            ..Default::default()
+        });
+        let _ = response.await.unwrap();
+
+        let key = prefix.join(format!("img_{}.tif", i));
+        let response = s3.get_object(GetObjectRequest {
+            bucket: "test-bucket".to_string(),
+            key: key.to_str().unwrap().to_string(),
+            ..Default::default()
+        });
+        let _ = response.await.unwrap_err();
+
+    }
+}
+

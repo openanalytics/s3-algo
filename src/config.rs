@@ -1,9 +1,17 @@
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
-pub struct UploadConfig {
+pub struct Config {
     /// Maximum number of simultaneous upload requests
     pub copy_parallelization: usize,
+
+    pub request: RequestConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+/// General parameters that control timeouts and retries
+pub struct RequestConfig {
     /// Timeout is set to a fraction of expected upload time (> 1.0)
     pub timeout_fraction: f64,
     /// Every retry, the timeout is multiplied by backoff (> 1.0)
@@ -27,10 +35,17 @@ pub struct UploadConfig {
     /// total timeout)
     pub min_timeout: f64,
 }
-impl Default for UploadConfig {
+impl Default for Config {
     fn default() -> Self {
         Self {
             copy_parallelization: 20,
+            request: RequestConfig::default(),
+        }
+    }
+}
+impl Default for RequestConfig {
+    fn default() -> Self {
+        Self {
             timeout_fraction: 1.5,
             backoff: 1.5,
             n_retries: 8,

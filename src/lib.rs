@@ -31,13 +31,18 @@ mod upload;
 pub use list_actions::*;
 pub use upload::*;
 pub mod timeout;
-pub use config::UploadConfig;
+pub use config::*;
 pub use err::Error;
 
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
 mod test;
+
+pub struct S3Algo<S> {
+    s3: S,
+    config: Config,
+}
 
 /// Result of a single S3 request.
 #[derive(Debug, Clone, Copy)]
@@ -77,7 +82,7 @@ where
             async move { Ok((factory(), size)) }
         },
         10,
-        Arc::new(Mutex::new(TimeoutState::new(UploadConfig::default()))),
+        Arc::new(Mutex::new(TimeoutState::new(RequestConfig::default()))),
     )
     .await
 }

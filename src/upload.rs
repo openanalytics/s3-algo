@@ -1,72 +1,73 @@
 use super::*;
 
-/// Upload multiple files to S3.
-///
-/// `s3_upload_files` provides counting of uploaded files and bytes through the `progress` closure:
-///
-/// For common use cases it is adviced to use [`files_recursive`](files_recursive) for the `files` parameter.
-///
-/// `progress` will be called after the upload of each file, with some data about that upload.
-/// The first `usize` parameter is the number of this file in the upload, while [`RequestReport`](struct.RequestReport.html)
-/// holds more data such as size in bytes, and the duration of the upload. It is thus possible to
-/// report progress both in amount of files, or amount of bytes, depending on what granularity is
-/// desired.
-/// `progress` returns a generic `F: Future` to support async operations like, for example, logging the
-/// results to a file; this future will be run as part of the upload algorithm.
-///
-/// `default_request` constructs the default request struct - only the fields `bucket`, `key`,
-/// `body` and `content_length` are overwritten by the upload algorithm.
-pub async fn s3_upload_files<P, F, C, I, R>(
-    s3: C,
-    bucket: String,
-    files: I,
-    cfg: UploadConfig,
-    progress: P,
-    default_request: R,
-) -> Result<(), Error>
-where
-    C: S3 + Clone + Send + Sync + Unpin + 'static,
-    P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
-    F: Future<Output = ()> + Send + 'static,
-    I: Iterator<Item = ObjectSource> + Send + 'static,
-    R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send + 'static,
-{
-    let copy_parallelization = cfg.copy_parallelization;
-    let n_retries = cfg.n_retries;
+impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
+    /// Upload multiple files to S3.
+    ///
+    /// `s3_upload_files` provides counting of uploaded files and bytes through the `progress` closure:
+    ///
+    /// For common use cases it is adviced to use [`files_recursive`](files_recursive) for the `files` parameter.
+    ///
+    /// `progress` will be called after the upload of each file, with some data about that upload.
+    /// The first `usize` parameter is the number of this file in the upload, while [`RequestReport`](struct.RequestReport.html)
+    /// holds more data such as size in bytes, and the duration of the upload. It is thus possible to
+    /// report progress both in amount of files, or amount of bytes, depending on what granularity is
+    /// desired.
+    /// `progress` returns a generic `F: Future` to support async operations like, for example, logging the
+    /// results to a file; this future will be run as part of the upload algorithm.
+    ///
+    /// `default_request` constructs the default request struct - only the fields `bucket`, `key`,
+    /// `body` and `content_length` are overwritten by the upload algorithm.
+    pub async fn s3_upload_files<P, F, C, I, R>(
+        &self,
+        bucket: String,
+        files: I,
+        progress: P,
+        default_request: R,
+    ) -> Result<(), Error>
+    where
+        C: S3 + Clone + Send + Sync + Unpin + 'static,
+        P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + 'static,
+        I: Iterator<Item = ObjectSource> + Send + 'static,
+        R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send + 'static,
+    {
+        let copy_parallelization = self.config.copy_parallelization;
+        let n_retries = self.config.request.n_retries;
 
-    let timeout_state = Arc::new(Mutex::new(TimeoutState::new(cfg)));
-    let timeout_state2 = timeout_state.clone();
+        let timeout_state = Arc::new(Mutex::new(TimeoutState::new(self.config.request.clone())));
+        let timeout_state2 = timeout_state.clone();
 
-    let jobs = files.map(move |src| {
-        let (default, bucket, s3) = (default_request.clone(), bucket.clone(), s3.clone());
-        s3_request(
-            move || {
-                src.clone()
-                    .create_upload_future(s3.clone(), bucket.clone(), default.clone())
-            },
-            n_retries,
-            timeout_state.clone(),
-        )
-        .boxed()
-    });
+        let jobs = files.map(move |src| {
+            let (default, bucket, s3) = (default_request.clone(), bucket.clone(), self.s3.clone());
+            s3_request(
+                move || {
+                    src.clone()
+                        .create_upload_future(s3.clone(), bucket.clone(), default.clone())
+                },
+                n_retries,
+                timeout_state.clone(),
+            )
+            .boxed()
+        });
 
-    // Run jobs in parallel,
-    //  adding eventual delays after each file upload and also at the end,
-    //  and counting the progress
-    stream::iter(jobs)
-        .buffer_unordered(copy_parallelization)
-        .zip(stream::iter(0..))
-        .map(|(result, i)| result.map(|result| (i, result)))
-        .try_for_each(move |(i, (mut result, _))| {
-            let progress = progress.clone();
-            let timeout_state = timeout_state2.clone();
-            async move {
-                result.seq = i;
-                timeout_state.lock().await.update(&result);
-                progress(result).map(Ok).await
-            }
-        })
-        .await
+        // Run jobs in parallel,
+        //  adding eventual delays after each file upload and also at the end,
+        //  and counting the progress
+        stream::iter(jobs)
+            .buffer_unordered(copy_parallelization)
+            .zip(stream::iter(0..))
+            .map(|(result, i)| result.map(|result| (i, result)))
+            .try_for_each(move |(i, (mut result, _))| {
+                let progress = progress.clone();
+                let timeout_state = timeout_state2.clone();
+                async move {
+                    result.seq = i;
+                    timeout_state.lock().await.update(&result);
+                    progress(result).map(Ok).await
+                }
+            })
+            .await
+    }
 }
 
 #[derive(Clone, Debug)]
