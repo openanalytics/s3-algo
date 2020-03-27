@@ -57,21 +57,19 @@ async fn benchmark_s3_upload(
     prefix: String,
     copy_parallelization: usize,
 ) {
-    let s3 = s3_algo::testing_s3_client();
-
-    let cfg = UploadConfig {
+    let cfg = Config {
         copy_parallelization,
         ..Default::default()
     };
+    let s3 = testing_s3_client();
+    let algo = S3Algo::with_config(s3, cfg);
 
     upload_perf_log_init(&mut std::io::stdout());
     let progress = |res| async move { upload_perf_log_update(&mut std::io::stdout(), res) };
 
-    s3_upload_files(
-        s3,
+    algo.upload_files(
         bucket,
         files_recursive(dir_path, PathBuf::from(&prefix)),
-        cfg,
         progress,
         Default::default,
     )

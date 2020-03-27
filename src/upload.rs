@@ -17,7 +17,7 @@ impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
     ///
     /// `default_request` constructs the default request struct - only the fields `bucket`, `key`,
     /// `body` and `content_length` are overwritten by the upload algorithm.
-    pub async fn s3_upload_files<P, F, C, I, R>(
+    pub async fn upload_files<P, F, I, R>(
         &self,
         bucket: String,
         files: I,
@@ -25,7 +25,6 @@ impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
         default_request: R,
     ) -> Result<(), Error>
     where
-        C: S3 + Clone + Send + Sync + Unpin + 'static,
         P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
         F: Future<Output = ()> + Send + 'static,
         I: Iterator<Item = ObjectSource> + Send + 'static,

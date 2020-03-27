@@ -19,8 +19,16 @@ pub struct ListObjects<C, S> {
 impl<C, S> ListObjects<C, S>
 where
     C: S3 + Clone + Send + Sync + Unpin + 'static,
-    S: Stream<Item = ListObjectsV2Result> + Sized + Send,
+    S: Stream<Item = ListObjectsV2Result> + Sized + Send + 'static,
 {
+    pub fn boxed(self) -> ListObjects<C, Pin<Box<dyn Stream<Item = ListObjectsV2Result> + Send>>> {
+        ListObjects {
+            s3: self.s3,
+            config: self.config,
+            bucket: self.bucket,
+            stream: self.stream.boxed(),
+        }
+    }
     pub fn delete_all(self) -> impl Future<Output = Result<(), Error>> {
         // For each ListObjectsV2Output, send a request to delete all the listed objects
         let ListObjects {
@@ -66,16 +74,16 @@ where
             .try_flatten()
     }
 
-    /// Copy all listed objects, to a different S3 location as defined in `mapping` and
-    /// `dest_bucket`.
-    /// If `other_bucket` is not provided, copy to same bucket
-    pub fn copy_all<F>(
+    /// This function exists to provide a stream to copy all objects, for both `copy_all` and
+    /// `move_all`. The `String` that is the stream's `Item` is the _source key_. An `Ok` value
+    /// thus signals (relevant when used in `move_all`) that a certain key is ready for deletion.
+    fn copy_all_stream<F>(
         self,
         mapping: F,
         dest_bucket: Option<String>,
-    ) -> impl Future<Output = Result<(), Error>>
+    ) -> impl Stream<Item = Result<String, Error>>
     where
-        F: Fn(String) -> String + Clone + Send + Sync + Unpin + 'static,
+        F: Fn(&str) -> String + Clone + Send + Sync + Unpin + 'static,
     {
         let ListObjects {
             s3,
@@ -95,12 +103,12 @@ where
                 ok(key.and_then(|key| size.map(|size| (key, size))))
             })
             .context(err::ListObjectsV2)
-            .try_for_each(move |(key, size)| {
+            .and_then(move |(key, size)| {
                 let (s3, timeout) = (s3.clone(), timeout.clone());
                 let request = CopyObjectRequest {
                     copy_source: format!("{}/{}", bucket, key),
                     bucket: dest_bucket.clone(),
-                    key: mapping(key),
+                    key: mapping(&key),
                     ..Default::default()
                 };
                 s3_request(
@@ -114,46 +122,69 @@ where
                     10,
                     timeout,
                 )
-                .map_ok(drop)
+                .map_ok(|_| key)
             })
+    }
+
+    /// Copy all listed objects, to a different S3 location as defined in `mapping` and
+    /// `dest_bucket`.
+    /// If `other_bucket` is not provided, copy to same bucket
+    pub fn copy_all<F>(
+        self,
+        mapping: F,
+        dest_bucket: Option<String>,
+    ) -> impl Future<Output = Result<(), Error>>
+    where
+        F: Fn(&str) -> String + Clone + Send + Sync + Unpin + 'static,
+    {
+        self.copy_all_stream(mapping, dest_bucket)
+            .try_for_each(|_| async { Ok(()) })
     }
     // TODO: Is it possible to change copy_all so that we can move_all by just chaining copy_all
     // and delete_all? Then copy_all would need to return a stream of old keys, but does that make
     // sense in general?
     // For now, this is code duplication.
-    /*
     pub fn move_all<F>(
-        let ListObjects { s3, bucket, stream } = self;
-        let dest_bucket = dest_bucket.unwrap_or_else(|| bucket.clone());
-        stream
-            .try_filter_map(|response| ok(response.contents))
-            .map_ok(|x| stream::iter(x).map(Ok))
-            .try_flatten()
-            .try_filter_map(|obj| ok(obj.key))
-            .context(err::ListObjectsV2)
-            .try_for_each(move |key| {
-                let (s3, src_bucket, dest_bucket, mapping) = (
-                    s3.clone(),
-                    bucket.clone(),
-                    dest_bucket.clone(),
-                    mapping.clone(),
-                );
-
-                async move {
-                    s3.copy_object(CopyObjectRequest {
-                        copy_source: format!("{}/{}", src_bucket, key),
-                        bucket: dest_bucket,
-                        key: mapping(key),
-                        ..Default::default()
-                    })
-                    .map_ok(drop)
-                    .context(err::CopyObject)
-                    .await;
-                    Ok(())
-                }
+        self,
+        mapping: F,
+        dest_bucket: Option<String>,
+    ) -> impl Future<Output = Result<(), Error>>
+    where
+        F: Fn(&str) -> String + Clone + Send + Sync + Unpin + 'static,
+    {
+        let src_bucket = self.bucket.clone();
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(self.config.request.clone())));
+        let s3 = self.s3.clone();
+        self.copy_all_stream(mapping, dest_bucket)
+            .and_then(move |src_key| {
+                let delete_request = DeleteObjectRequest {
+                    bucket: src_bucket.clone(),
+                    key: src_key,
+                    ..Default::default()
+                };
+                let (s3, timeout) = (s3.clone(), timeout.clone());
+                s3_request(
+                    move || {
+                        let (s3, delete_request) = (s3.clone(), delete_request.clone());
+                        async move {
+                            let (s3, delete_request) = (s3.clone(), delete_request.clone());
+                            Ok((
+                                async move {
+                                    s3.delete_object(delete_request)
+                                        .context(err::DeleteObject)
+                                        .await
+                                },
+                                0,
+                            ))
+                        }
+                    },
+                    10,
+                    timeout,
+                )
+                .map_ok(drop)
             })
-        )
-    */
+            .try_for_each(|_| async { Ok(()) })
+    }
 }
 
 impl<C, S> Stream for ListObjects<C, S>
@@ -242,17 +273,16 @@ mod test {
         // Minio does paging at 10'000 fles, so we need more than that.
         // It means this test will take a minutes or two.
         let s3 = testing_s3_client();
+        let algo = S3Algo::new(s3);
         let dir = rand_string(14);
         const N_FILES: usize = 11_000;
         let files = (0..N_FILES).map(move |i| ObjectSource::Data {
             data: vec![1, 2, 3],
             key: format!("{}/{}.file", dir, i),
         });
-        s3_upload_files(
-            s3.clone(),
+        algo.upload_files(
             "test-bucket".into(),
             files,
-            UploadConfig::default(),
             |result| async move {
                 if result.seq % 100 == 0 {
                     println!("{} files uploaded", result.seq);
@@ -264,13 +294,14 @@ mod test {
         .unwrap();
 
         // Delete all
-        s3_list_prefix(s3.clone(), "test-bucket".into(), String::new())
+        algo.list_prefix("test-bucket".into(), String::new())
             .delete_all()
             .await
             .unwrap();
 
         // List
-        let count = s3_list_prefix(s3, "test-bucket".into(), String::new())
+        let count = algo
+            .list_prefix("test-bucket".into(), String::new())
             .flatten()
             .try_fold(0usize, |acc, _| ok(acc + 1))
             .await

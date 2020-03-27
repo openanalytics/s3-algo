@@ -42,7 +42,7 @@ fn everything_is_sync_and_static() {
     verify(s3_request(
         || async move { Ok((async move { Ok(()) }, 0)) },
         5,
-        Arc::new(Mutex::new(TimeoutState::new(UploadConfig::default()))),
+        Arc::new(Mutex::new(TimeoutState::new(RequestConfig::default()))),
     ))
 }
 
@@ -58,14 +58,12 @@ async fn s3_upload_files_seq_count() {
         std::fs::write(&path, "hello".as_bytes()).unwrap();
     }
 
-    let cli = S3MockRetry::new(2);
+    let s3 = S3Algo::new(S3MockRetry::new(2));
 
     let counter = Arc::new(Mutex::new(0));
-    s3_upload_files(
-        cli,
+    s3.upload_files(
         "any-bucket".into(),
         files_recursive(folder, PathBuf::new()),
-        UploadConfig::default(),
         move |res| {
             let counter = counter.clone();
             async move {
@@ -88,13 +86,11 @@ async fn s3_upload_file_attempts_count() {
     let path = tmp_dir.path().join("file.txt");
     std::fs::write(&path, "hello".as_bytes()).unwrap();
 
-    let cli = S3MockRetry::new(ATTEMPTS - 1);
+    let s3 = S3Algo::new(S3MockRetry::new(ATTEMPTS - 1));
 
-    s3_upload_files(
-        cli,
+    s3.upload_files(
         "any_bucket".into(),
         files_recursive(path, PathBuf::new()),
-        UploadConfig::default(),
         |result| async move { assert_eq!(result.attempts, ATTEMPTS) },
         PutObjectRequest::default,
     )
@@ -108,7 +104,8 @@ async fn test_s3_upload_files() {
     let tmp_dir = TempDir::new("s3-testing").unwrap();
 
     let s3 = testing_s3_client();
-    let dir_key = upload_test_files(s3.clone(), tmp_dir.path(), N_FILES)
+    let algo = S3Algo::new(s3.clone());
+    let dir_key = upload_test_files(algo.clone(), tmp_dir.path(), N_FILES)
         .await
         .unwrap();
 
@@ -177,19 +174,22 @@ async fn test_s3_timeouts() {
     // Test that timeout on successive errors follows a desired curve
 
     // These are all parameters related to timeout, shown explicitly
-    let cfg = UploadConfig {
-        expected_upload_speed: 1.0,
-        backoff: 1.5,
-        avg_min_bytes: 1_000_000,
-        min_timeout: 0.5,
-        timeout_fraction: 1.5,
-        avg_power: 0.7,
+    let cfg = Config {
+        request: RequestConfig {
+            expected_upload_speed: 1.0,
+            backoff: 1.5,
+            avg_min_bytes: 1_000_000,
+            min_timeout: 0.5,
+            timeout_fraction: 1.5,
+            avg_power: 0.7,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
     for bytes in bytes {
         println!("# Bytes = {}", bytes);
-        let timeout = TimeoutState::new(cfg.clone());
+        let timeout = TimeoutState::new(cfg.request.clone());
 
         let timeouts = (1..=10)
             .map(|retries| timeout.get_timeout(bytes, retries))
@@ -203,10 +203,11 @@ async fn test_delete_files_parallelization() {
     // List 10 pages of file - each listing takes 100ms,
     // and delete pages in parallel (100ms per page)
 
-    let cli = S3MockListAndDelete::new(Duration::from_millis(100), Duration::from_millis(100), 10);
+    let s3 = S3MockListAndDelete::new(Duration::from_millis(100), Duration::from_millis(100), 10);
+    let algo = S3Algo::new(s3);
 
     let start = Instant::now();
-    s3_list_prefix(cli, "test-bucket".to_string(), "some/prefix".to_string())
+    algo.list_prefix("test-bucket".to_string(), "some/prefix".to_string())
         .delete_all()
         .await
         .unwrap();
@@ -223,7 +224,7 @@ async fn test_delete_files_parallelization() {
 
 /// Returns the common prefix of all files in S3
 async fn upload_test_files<S: S3 + Clone + Send + Sync + Unpin + 'static>(
-    s3: S,
+    s3: S3Algo<S>,
     parent: &Path,
     n_files: usize,
 ) -> Result<PathBuf, Error> {
@@ -237,44 +238,40 @@ async fn upload_test_files<S: S3 + Clone + Send + Sync + Unpin + 'static>(
     }
 
     println!("Upload {} to {:?} ", dir.display(), dir_key);
-    s3_upload_files(
-        s3,
+    s3.upload_files(
         "test-bucket".into(),
         files_recursive(dir.clone(), dir.strip_prefix(parent).unwrap().to_owned()),
-        UploadConfig::default(),
         |_| async move {},
         PutObjectRequest::default,
     )
     .await?;
     Ok(dir_key)
 }
-
 #[tokio::test]
 async fn test_move_files() {
     // Half test, half example: how to move files (copy, then delete)
     const N_FILES: usize = 100;
     let s3 = testing_s3_client();
+    let algo = S3Algo::new(s3.clone());
     let tmp_dir = TempDir::new("s3-testing").unwrap();
-    let prefix = upload_test_files(s3.clone(), tmp_dir.path(), N_FILES)
+    let prefix = upload_test_files(algo.clone(), tmp_dir.path(), N_FILES)
         .await
         .unwrap();
     let new_prefix = PathBuf::from("haha/lala");
+    let new_prefix2 = new_prefix.clone();
 
-    s3_list_prefix(
-        s3.clone(),
-        "test-bucket".into(),
-        format!("{}", prefix.display()),
-    )
-    .copy_all(
-        |key| {
-            let key = PathBuf::from(key);
-            let name = key.file_name().unwrap();
-            format!("{}/{}", new_prefix.display(), name.to_str().unwrap())
-        },
-        None,
-    )
-    .await
-    .unwrap();
+    algo.list_prefix("test-bucket".into(), format!("{}", prefix.display()))
+        .boxed() // hope we can remove boxed() soon (it's for reducing type size)
+        .move_all(
+            move |key| {
+                let key = PathBuf::from(key);
+                let name = key.file_name().unwrap();
+                format!("{}/{}", new_prefix2.display(), name.to_str().unwrap())
+            },
+            None,
+        )
+        .await
+        .unwrap();
 
     // Check that all files are under `new_prefix` and not under `prefix`
     for i in 0..N_FILES {

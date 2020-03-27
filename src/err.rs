@@ -34,6 +34,9 @@ pub enum Error {
     DeleteObjects {
         source: RusotoError<DeleteObjectsError>,
     },
+    DeleteObject {
+        source: RusotoError<DeleteObjectError>,
+    },
     CopyObject {
         source: RusotoError<CopyObjectError>,
     },

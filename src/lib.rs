@@ -39,9 +39,21 @@ mod mock;
 #[cfg(test)]
 mod test;
 
+#[derive(Clone)]
 pub struct S3Algo<S> {
     s3: S,
     config: Config,
+}
+impl<S> S3Algo<S> {
+    pub fn new(s3: S) -> Self {
+        Self {
+            s3,
+            config: Config::default(),
+        }
+    }
+    pub fn with_config(s3: S, config: Config) -> Self {
+        Self { s3, config }
+    }
 }
 
 /// Result of a single S3 request.
