@@ -39,7 +39,7 @@ where
         } = self;
         stream
             .filter_map(|response| ready(response.map(|r| r.contents).transpose()))
-            .context(err::ListObjectsV2)
+            .map_err(|e| e.into())
             .try_for_each_concurrent(None, move |contents| {
                 let s3 = s3.clone();
                 let bucket = bucket.clone();
@@ -61,7 +61,7 @@ where
                         ..Default::default()
                     })
                     .map_ok(drop)
-                    .context(err::DeleteObjects)
+                    .map_err(|e| e.into())
                     .await
                 }
             })

@@ -40,4 +40,18 @@ pub enum Error {
     CopyObject {
         source: RusotoError<CopyObjectError>,
     },
+    AnyError {
+        source: Box<dyn std::error::Error + Send>,
+    },
+}
+
+impl<T> From<RusotoError<T>> for Error
+where
+    T: std::error::Error + Send + 'static,
+{
+    fn from(err: RusotoError<T>) -> Self {
+        Self::AnyError {
+            source: Box::new(err),
+        }
+    }
 }

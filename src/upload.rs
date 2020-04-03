@@ -133,7 +133,7 @@ impl ObjectSource {
                 content_length: Some(len as i64),
                 ..default()
             })
-            .with_context(move || err::PutObject { key })
+            .map_err(|e| e.into())
             .await
             .map(drop)
         };

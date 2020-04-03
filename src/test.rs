@@ -249,7 +249,6 @@ async fn upload_test_files<S: S3 + Clone + Send + Sync + Unpin + 'static>(
 }
 #[tokio::test]
 async fn test_move_files() {
-    // Half test, half example: how to move files (copy, then delete)
     const N_FILES: usize = 100;
     let s3 = testing_s3_client();
     let algo = S3Algo::new(s3.clone());
