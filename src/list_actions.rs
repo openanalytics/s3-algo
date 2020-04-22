@@ -14,6 +14,9 @@ pub struct ListObjects<C, S> {
     s3: C,
     config: Config,
     bucket: String,
+    /// Common prefix (as requested) of the listed objects. Empty string if all objects were
+    /// requestd.
+    prefix: String,
     stream: S,
 }
 impl<C, S> ListObjects<C, S>
@@ -27,6 +30,7 @@ where
             config: self.config,
             bucket: self.bucket,
             stream: self.stream.boxed(),
+            prefix: self.prefix,
         }
     }
     pub fn delete_all(self) -> impl Future<Output = Result<(), Error>> {
@@ -36,6 +40,7 @@ where
             config,
             bucket,
             stream,
+            prefix,
         } = self;
         stream
             .filter_map(|response| ready(response.map(|r| r.contents).transpose()))
@@ -90,6 +95,7 @@ where
             config,
             bucket,
             stream,
+            prefix: _,
         } = self;
         let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request.clone())));
         let dest_bucket = dest_bucket.unwrap_or_else(|| bucket.clone());
@@ -182,8 +188,21 @@ where
                     timeout,
                 )
                 .map_ok(drop)
+                .boxed()
             })
             .try_for_each(|_| async { Ok(()) })
+            .boxed()
+    }
+    /// Move all listed objects by substituting their common prefix with `new_prefix`.
+    pub fn move_to_prefix(
+        self,
+        new_prefix: String,
+        dest_bucket: Option<String>,
+    ) -> impl Future<Output = Result<(), Error>> {
+        let old_prefix = self.prefix.clone();
+        let substitute_prefix =
+            move |source: &str| format!("{}{}", new_prefix, source.trim_start_matches(&old_prefix));
+        self.move_all(substitute_prefix, dest_bucket).boxed()
     }
 }
 
@@ -206,11 +225,14 @@ impl<S: S3 + Clone + Send + Sync + 'static> S3Algo<S> {
         prefix: String,
     ) -> ListObjects<S, impl Stream<Item = ListObjectsV2Result> + Sized + Send> {
         let bucket1 = bucket.clone();
-        self.list_objects(bucket, move || ListObjectsV2Request {
+        let prefix2 = prefix.clone();
+        let mut s = self.list_objects(bucket, move || ListObjectsV2Request {
             bucket: bucket1.clone(),
-            prefix: Some(prefix.clone()),
+            prefix: Some(prefix2.clone()),
             ..Default::default()
-        })
+        });
+        s.prefix = prefix;
+        s
     }
 
     /// List all objects given a request factory.
@@ -260,6 +282,7 @@ impl<S: S3 + Clone + Send + Sync + 'static> S3Algo<S> {
             config: self.config.clone(),
             stream,
             bucket,
+            prefix: String::new(),
         }
     }
 }

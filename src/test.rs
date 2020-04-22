@@ -257,8 +257,14 @@ async fn test_move_files() {
         .await
         .unwrap();
     let new_prefix = PathBuf::from("haha/lala");
-    let new_prefix2 = new_prefix.clone();
+    println!(
+        "Move prefix {} to {}",
+        prefix.display(),
+        new_prefix.display()
+    );
 
+    // TODO try also the following more manual way of doing the same
+    /*
     algo.list_prefix("test-bucket".into(), format!("{}", prefix.display()))
         .boxed() // hope we can remove boxed() soon (it's for reducing type size)
         .move_all(
@@ -269,6 +275,13 @@ async fn test_move_files() {
             },
             None,
         )
+        .await
+        .unwrap();
+    */
+    algo.list_prefix("test-bucket".into(), prefix.to_str().unwrap().to_owned())
+        .boxed() // hope we can remove boxed() soon (it's for reducing type size)
+        .move_to_prefix(new_prefix.to_str().unwrap().to_owned(), None)
+        .boxed()
         .await
         .unwrap();
 

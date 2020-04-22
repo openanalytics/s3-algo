@@ -3,8 +3,8 @@
 //!
 //! https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html
 //!
-//! - Upload multiple files with [`s3_upload_files`](s3_upload_files).
-//! - List files with [`s3_list_objects`](s3_list_objects) or [`s3_list_prefix`](s3_list_prefix),
+//! - Upload multiple files with `S3Algo::upload_files`.
+//! - List files with `S3Algo::s3_list_objects` or `S3Algo::s3_list_prefix`,
 //! and then execute deletion or copy on all the files.
 
 use crate::timeout::*;

@@ -3,7 +3,7 @@ use super::*;
 impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
     /// Upload multiple files to S3.
     ///
-    /// `s3_upload_files` provides counting of uploaded files and bytes through the `progress` closure:
+    /// `upload_files` provides counting of uploaded files and bytes through the `progress` closure:
     ///
     /// For common use cases it is adviced to use [`files_recursive`](files_recursive) for the `files` parameter.
     ///
@@ -148,7 +148,7 @@ impl ObjectSource {
 }
 
 /// Convenience function (using `walkdir`) to traverse all files in directory `src_dir`. Returns an
-/// iterator that can be used as input to [`s3_upload_files`](s3_upload_files), which uploads files
+/// iterator that can be used as input to `S3Algo::upload_files`, which uploads files
 /// with a key equal to the file's path with `src_dir` stripped away, and with `key_prefix`
 /// prepended.
 pub fn files_recursive(
