@@ -84,8 +84,8 @@ where
     /// thus signals (relevant when used in `move_all`) that a certain key is ready for deletion.
     fn copy_all_stream<F>(
         self,
-        mapping: F,
         dest_bucket: Option<String>,
+        mapping: F,
     ) -> impl Stream<Item = Result<String, Error>>
     where
         F: Fn(&str) -> String + Clone + Send + Sync + Unpin + 'static,
@@ -137,13 +137,13 @@ where
     /// If `other_bucket` is not provided, copy to same bucket
     pub fn copy_all<F>(
         self,
-        mapping: F,
         dest_bucket: Option<String>,
+        mapping: F,
     ) -> impl Future<Output = Result<(), Error>>
     where
         F: Fn(&str) -> String + Clone + Send + Sync + Unpin + 'static,
     {
-        self.copy_all_stream(mapping, dest_bucket)
+        self.copy_all_stream(dest_bucket, mapping)
             .try_for_each(|_| async { Ok(()) })
     }
     // TODO: Is it possible to change copy_all so that we can move_all by just chaining copy_all
@@ -152,8 +152,8 @@ where
     // For now, this is code duplication.
     pub fn move_all<F>(
         self,
-        mapping: F,
         dest_bucket: Option<String>,
+        mapping: F,
     ) -> impl Future<Output = Result<(), Error>>
     where
         F: Fn(&str) -> String + Clone + Send + Sync + Unpin + 'static,
@@ -161,7 +161,7 @@ where
         let src_bucket = self.bucket.clone();
         let timeout = Arc::new(Mutex::new(TimeoutState::new(self.config.request.clone())));
         let s3 = self.s3.clone();
-        self.copy_all_stream(mapping, dest_bucket)
+        self.copy_all_stream(dest_bucket, mapping)
             .and_then(move |src_key| {
                 let delete_request = DeleteObjectRequest {
                     bucket: src_bucket.clone(),
@@ -196,13 +196,13 @@ where
     /// Move all listed objects by substituting their common prefix with `new_prefix`.
     pub fn move_to_prefix(
         self,
-        new_prefix: String,
         dest_bucket: Option<String>,
+        new_prefix: String,
     ) -> impl Future<Output = Result<(), Error>> {
         let old_prefix = self.prefix.clone();
         let substitute_prefix =
             move |source: &str| format!("{}{}", new_prefix, source.trim_start_matches(&old_prefix));
-        self.move_all(substitute_prefix, dest_bucket).boxed()
+        self.move_all(dest_bucket, substitute_prefix).boxed()
     }
 }
 

@@ -280,7 +280,7 @@ async fn test_move_files() {
     */
     algo.list_prefix("test-bucket".into(), prefix.to_str().unwrap().to_owned())
         .boxed() // hope we can remove boxed() soon (it's for reducing type size)
-        .move_to_prefix(new_prefix.to_str().unwrap().to_owned(), None)
+        .move_to_prefix(None, new_prefix.to_str().unwrap().to_owned())
         .boxed()
         .await
         .unwrap();
