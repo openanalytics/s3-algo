@@ -37,10 +37,10 @@ where
         // For each ListObjectsV2Output, send a request to delete all the listed objects
         let ListObjects {
             s3,
-            config,
+            config: _,
             bucket,
             stream,
-            prefix,
+            prefix: _,
         } = self;
         stream
             .filter_map(|response| ready(response.map(|r| r.contents).transpose()))
@@ -82,13 +82,15 @@ where
     /// This function exists to provide a stream to copy all objects, for both `copy_all` and
     /// `move_all`. The `String` that is the stream's `Item` is the _source key_. An `Ok` value
     /// thus signals (relevant when used in `move_all`) that a certain key is ready for deletion.
-    fn copy_all_stream<F>(
+    fn copy_all_stream<F, R>(
         self,
         dest_bucket: Option<String>,
         mapping: F,
+        default_request: R,
     ) -> impl Stream<Item = Result<String, Error>>
     where
         F: Fn(&str) -> String + Clone + Send + Sync + Unpin + 'static,
+        R: Fn() -> CopyObjectRequest + Clone + Unpin + Sync + Send + 'static,
     {
         let ListObjects {
             s3,
@@ -115,7 +117,7 @@ where
                     copy_source: format!("{}/{}", bucket, key),
                     bucket: dest_bucket.clone(),
                     key: mapping(&key),
-                    ..Default::default()
+                    ..default_request()
                 };
                 s3_request(
                     move || {
@@ -135,33 +137,37 @@ where
     /// Copy all listed objects, to a different S3 location as defined in `mapping` and
     /// `dest_bucket`.
     /// If `other_bucket` is not provided, copy to same bucket
-    pub fn copy_all<F>(
+    pub fn copy_all<F, R>(
         self,
         dest_bucket: Option<String>,
         mapping: F,
+        default_request: R,
     ) -> impl Future<Output = Result<(), Error>>
     where
         F: Fn(&str) -> String + Clone + Send + Sync + Unpin + 'static,
+        R: Fn() -> CopyObjectRequest + Clone + Unpin + Sync + Send + 'static,
     {
-        self.copy_all_stream(dest_bucket, mapping)
+        self.copy_all_stream(dest_bucket, mapping, default_request)
             .try_for_each(|_| async { Ok(()) })
     }
     // TODO: Is it possible to change copy_all so that we can move_all by just chaining copy_all
     // and delete_all? Then copy_all would need to return a stream of old keys, but does that make
     // sense in general?
     // For now, this is code duplication.
-    pub fn move_all<F>(
+    pub fn move_all<F, R>(
         self,
         dest_bucket: Option<String>,
         mapping: F,
+        default_request: R,
     ) -> impl Future<Output = Result<(), Error>>
     where
         F: Fn(&str) -> String + Clone + Send + Sync + Unpin + 'static,
+        R: Fn() -> CopyObjectRequest + Clone + Unpin + Sync + Send + 'static,
     {
         let src_bucket = self.bucket.clone();
         let timeout = Arc::new(Mutex::new(TimeoutState::new(self.config.request.clone())));
         let s3 = self.s3.clone();
-        self.copy_all_stream(dest_bucket, mapping)
+        self.copy_all_stream(dest_bucket, mapping, default_request)
             .and_then(move |src_key| {
                 let delete_request = DeleteObjectRequest {
                     bucket: src_bucket.clone(),
@@ -194,15 +200,20 @@ where
             .boxed()
     }
     /// Move all listed objects by substituting their common prefix with `new_prefix`.
-    pub fn move_to_prefix(
+    pub fn move_to_prefix<R>(
         self,
         dest_bucket: Option<String>,
         new_prefix: String,
-    ) -> impl Future<Output = Result<(), Error>> {
+        default_request: R,
+    ) -> impl Future<Output = Result<(), Error>>
+    where
+        R: Fn() -> CopyObjectRequest + Clone + Unpin + Sync + Send + 'static,
+    {
         let old_prefix = self.prefix.clone();
         let substitute_prefix =
             move |source: &str| format!("{}{}", new_prefix, source.trim_start_matches(&old_prefix));
-        self.move_all(dest_bucket, substitute_prefix).boxed()
+        self.move_all(dest_bucket, substitute_prefix, default_request)
+            .boxed()
     }
 }
 
