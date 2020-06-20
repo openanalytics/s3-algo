@@ -107,12 +107,14 @@ where
             })
     }
 
+    /*
     /// Download all listed objects to file system.
     /// UNIMPLEMENTED.
     pub fn download_all(self) -> impl Future<Output = Result<(), Error>> {
         // TODO use download_all_stream
         ok(unimplemented!())
     }
+    */
     /// Delete all listed objects
     pub fn delete_all(self) -> impl Future<Output = Result<(), Error>> {
         // For each ListObjectsV2Output, send a request to delete all the listed objects
