@@ -1,11 +1,13 @@
 use super::*;
 use futures::future::{ok, ready};
 use futures::stream::Stream;
+use rusoto_core::ByteStream;
 use rusoto_s3::ListObjectsV2Output;
 use snafu::futures::TryStreamExt;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use tokio::io;
 
 pub type ListObjectsV2Result = Result<ListObjectsV2Output, RusotoError<ListObjectsV2Error>>;
 
@@ -33,6 +35,85 @@ where
             prefix: self.prefix,
         }
     }
+    /// Download all listed objects - returns a stream of the contents.
+    /// Used as a basis for other `download_all_*` functions.
+    pub fn download_all_stream<R>(
+        self,
+        default_request: R,
+    ) -> impl Stream<Item = Result<(String, ByteStream), Error>>
+    where
+        R: Fn() -> GetObjectRequest + Clone + Unpin + Sync + Send + 'static,
+    {
+        let ListObjects {
+            s3,
+            config,
+            bucket,
+            stream,
+            prefix: _,
+        } = self;
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request.clone())));
+        stream
+            .try_filter_map(|response| ok(response.contents))
+            .map_ok(|x| stream::iter(x).map(Ok))
+            .try_flatten()
+            .try_filter_map(|obj| {
+                // Just filter out any object that does not have both of `key` and `size`
+                let Object { key, size, .. } = obj;
+                ok(key.and_then(|key| size.map(|size| (key, size))))
+            })
+            .context(err::ListObjectsV2)
+            .and_then(move |(key, size)| {
+                let (s3, timeout) = (s3.clone(), timeout.clone());
+                let request = GetObjectRequest {
+                    bucket: bucket.clone(),
+                    key: key.clone(),
+                    ..default_request()
+                };
+                s3_request(
+                    move || {
+                        let (s3, request) = (s3.clone(), request.clone());
+                        async move {
+                            let (s3, request) = (s3.clone(), request.clone());
+                            Ok((
+                                async move { s3.get_object(request).context(err::GetObject).await },
+                                size as u64,
+                            ))
+                        }
+                    },
+                    10,
+                    timeout,
+                )
+                // Include key in the Item, and turn Option around the entire Item
+                .map_ok(|response| response.1.body.map(|body| (key, body)))
+            })
+            // Remove those responses that have no body
+            .try_filter_map(|item| ok(item))
+    }
+
+    pub fn download_all_to_vec<R>(
+        self,
+        default_request: R,
+    ) -> impl Stream<Item = Result<(String, Vec<u8>), Error>>
+    where
+        R: Fn() -> GetObjectRequest + Clone + Unpin + Sync + Send + 'static,
+    {
+        self.download_all_stream(default_request)
+            .and_then(|(key, body)| async move {
+                let mut contents = vec![];
+                io::copy(&mut body.into_async_read(), &mut contents)
+                    .await
+                    .context(err::TokioIo)?;
+                Ok((key, contents))
+            })
+    }
+
+    /// Download all listed objects to file system.
+    /// UNIMPLEMENTED.
+    pub fn download_all(self) -> impl Future<Output = Result<(), Error>> {
+        // TODO use download_all_stream
+        ok(unimplemented!())
+    }
+    /// Delete all listed objects
     pub fn delete_all(self) -> impl Future<Output = Result<(), Error>> {
         // For each ListObjectsV2Output, send a request to delete all the listed objects
         let ListObjects {
