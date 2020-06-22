@@ -51,7 +51,7 @@ where
             stream,
             prefix: _,
         } = self;
-        let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request.clone())));
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request)));
         stream
             .try_filter_map(|response| ok(response.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
@@ -87,7 +87,7 @@ where
                 .map_ok(|response| response.1.body.map(|body| (key, body)))
             })
             // Remove those responses that have no body
-            .try_filter_map(|item| ok(item))
+            .try_filter_map(ok)
     }
 
     pub fn download_all_to_vec<R>(
@@ -182,7 +182,7 @@ where
             stream,
             prefix: _,
         } = self;
-        let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request.clone())));
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request)));
         let dest_bucket = dest_bucket.unwrap_or_else(|| bucket.clone());
         stream
             .try_filter_map(|response| ok(response.contents))
