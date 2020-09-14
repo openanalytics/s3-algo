@@ -50,17 +50,34 @@ pub enum Error {
         source: tokio::io::Error,
     },
     AnyError {
-        source: Box<dyn std::error::Error + Send>,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 }
 
 impl<T> From<RusotoError<T>> for Error
 where
-    T: std::error::Error + Send + 'static,
+    T: std::error::Error + Send + Sync + 'static,
 {
     fn from(err: RusotoError<T>) -> Self {
         Self::AnyError {
             source: Box::new(err),
         }
     }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use snafu::GenerateBacktrace;
+    #[test]
+    fn error_traits() {
+        fn foo<T: Send>(_: T) {
+        }
+        foo(Error::Io {
+            source: io::Error::from_raw_os_error(1),
+            description: "hello".into(),
+            backtrace: Backtrace::generate(),
+        });
+    }
+
 }
