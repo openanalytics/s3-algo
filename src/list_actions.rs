@@ -120,38 +120,52 @@ where
         // For each ListObjectsV2Output, send a request to delete all the listed objects
         let ListObjects {
             s3,
-            config: _,
+            config,
             bucket,
             stream,
             prefix: _,
         } = self;
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request)));
         stream
             .filter_map(|response| ready(response.map(|r| r.contents).transpose()))
             .map_err(|e| e.into())
             .try_for_each_concurrent(None, move |contents| {
-                let s3 = s3.clone();
-                let bucket = bucket.clone();
-                async move {
-                    s3.delete_objects(DeleteObjectsRequest {
-                        bucket,
-                        delete: Delete {
-                            objects: contents
-                                .iter()
-                                .filter_map(|obj| {
-                                    obj.key.as_ref().map(|key| ObjectIdentifier {
-                                        key: key.clone(),
-                                        version_id: None,
+                let (s3, bucket, timeout) = (s3.clone(), bucket.clone(), timeout.clone());
+                s3_request(
+                    move || {
+                        let (s3, bucket, contents) = (s3.clone(), bucket.clone(), contents.clone());
+                        async move {
+                            let (s3, bucket, contents) =
+                                (s3.clone(), bucket.clone(), contents.clone());
+                            Ok((
+                                async move {
+                                    s3.delete_objects(DeleteObjectsRequest {
+                                        bucket,
+                                        delete: Delete {
+                                            objects: contents
+                                                .iter()
+                                                .filter_map(|obj| {
+                                                    obj.key.as_ref().map(|key| ObjectIdentifier {
+                                                        key: key.clone(),
+                                                        version_id: None,
+                                                    })
+                                                })
+                                                .collect::<Vec<_>>(),
+                                            quiet: None,
+                                        },
+                                        ..Default::default()
                                     })
-                                })
-                                .collect::<Vec<_>>(),
-                            quiet: None,
-                        },
-                        ..Default::default()
-                    })
-                    .map_ok(drop)
-                    .map_err(|e| e.into())
-                    .await
-                }
+                                    .map_err(|e| e.into())
+                                    .await
+                                },
+                                0, /*TODO*/
+                            ))
+                        }
+                    },
+                    10,
+                    timeout,
+                )
+                .map_ok(drop)
             })
     }
     /// Flatten into a stream of Objects.
