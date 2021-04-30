@@ -33,6 +33,7 @@ pub(crate) fn rand_string(n: usize) -> String {
 
 #[test]
 fn everything_is_sync_and_static() {
+    // This is only to test that it compiles
     fn verify<F, T>(_: F)
     where
         F: Future<Output = T> + Send + 'static,
@@ -42,7 +43,10 @@ fn everything_is_sync_and_static() {
     verify(s3_request(
         || async move { Ok((async move { Ok(()) }, 0)) },
         5,
-        Arc::new(Mutex::new(TimeoutState::new(RequestConfig::default()))),
+        Arc::new(Mutex::new(TimeoutState::new(
+            AlgorithmConfig::default(),
+            SpecificTimings::default_for_bytes(),
+        ))),
     ))
 }
 
@@ -158,7 +162,7 @@ async fn test_s3_single_request() {
                 })
             }
         },
-        Some(SIZE),
+        0.5,
     )
     .await;
 
@@ -175,11 +179,9 @@ async fn test_s3_timeouts() {
 
     // These are all parameters related to timeout, shown explicitly
     let cfg = Config {
-        request: RequestConfig {
-            expected_upload_speed: 1.0,
+        algorithm: AlgorithmConfig {
             backoff: 1.5,
-            avg_min_bytes: 1_000_000,
-            min_timeout: 0.5,
+            base_timeout: 0.5,
             timeout_fraction: 1.5,
             avg_power: 0.7,
             ..Default::default()
@@ -189,7 +191,7 @@ async fn test_s3_timeouts() {
 
     for bytes in bytes {
         println!("# Bytes = {}", bytes);
-        let timeout = TimeoutState::new(cfg.request.clone());
+        let timeout = TimeoutState::new(cfg.algorithm.clone(), cfg.put_requests.clone());
 
         let timeouts = (1..=10)
             .map(|retries| timeout.get_timeout(bytes, retries))
@@ -208,7 +210,7 @@ async fn test_delete_files_parallelization() {
 
     let start = Instant::now();
     algo.list_prefix("test-bucket".to_string(), "some/prefix".to_string())
-        .delete_all()
+        .delete_all(|_| async {})
         .await
         .unwrap();
     let duration = Instant::now() - start;

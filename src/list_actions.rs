@@ -51,7 +51,11 @@ where
             stream,
             prefix: _,
         } = self;
-        let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request)));
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(
+            config.algorithm.clone(),
+            config.put_requests.clone(),
+        )));
+        let n_retries = config.algorithm.n_retries;
         stream
             .try_filter_map(|response| ok(response.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
@@ -80,7 +84,7 @@ where
                             ))
                         }
                     },
-                    10,
+                    n_retries,
                     timeout,
                 )
                 // Include key in the Item, and turn Option around the entire Item
@@ -115,8 +119,14 @@ where
         ok(unimplemented!())
     }
     */
-    /// Delete all listed objects
-    pub fn delete_all(self) -> impl Future<Output = Result<(), Error>> {
+    /// Delete all listed objects.
+    /// In the `progress` closure's argument, the `size` file refers to the number of files
+    /// (attempted) deleted.
+    pub fn delete_all<P, F>(self, progress: P) -> impl Future<Output = Result<(), Error>>
+    where
+        P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + 'static,
+    {
         // For each ListObjectsV2Output, send a request to delete all the listed objects
         let ListObjects {
             s3,
@@ -125,47 +135,64 @@ where
             stream,
             prefix: _,
         } = self;
-        let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request)));
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(
+            config.algorithm.clone(),
+            config.delete_requests.clone(),
+        )));
+        let n_retries = config.algorithm.n_retries;
         stream
             .filter_map(|response| ready(response.map(|r| r.contents).transpose()))
             .map_err(|e| e.into())
             .try_for_each_concurrent(None, move |contents| {
-                let (s3, bucket, timeout) = (s3.clone(), bucket.clone(), timeout.clone());
-                s3_request(
-                    move || {
-                        let (s3, bucket, contents) = (s3.clone(), bucket.clone(), contents.clone());
-                        async move {
-                            let (s3, bucket, contents) =
-                                (s3.clone(), bucket.clone(), contents.clone());
-                            Ok((
-                                async move {
-                                    s3.delete_objects(DeleteObjectsRequest {
-                                        bucket,
-                                        delete: Delete {
-                                            objects: contents
-                                                .iter()
-                                                .filter_map(|obj| {
-                                                    obj.key.as_ref().map(|key| ObjectIdentifier {
-                                                        key: key.clone(),
-                                                        version_id: None,
-                                                    })
-                                                })
-                                                .collect::<Vec<_>>(),
-                                            quiet: None,
-                                        },
-                                        ..Default::default()
-                                    })
-                                    .map_err(|e| e.into())
-                                    .await
-                                },
-                                0, /*TODO*/
-                            ))
-                        }
-                    },
-                    10,
-                    timeout,
-                )
-                .map_ok(drop)
+                let (s3, bucket, timeout, progress) = (
+                    s3.clone(),
+                    bucket.clone(),
+                    timeout.clone(),
+                    progress.clone(),
+                );
+                let objects = contents
+                    .iter()
+                    .filter_map(|obj| {
+                        obj.key.as_ref().map(|key| ObjectIdentifier {
+                            key: key.clone(),
+                            version_id: None,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                async move {
+                    let (report, _) = s3_request(
+                        move || {
+                            let (s3, bucket, objects) =
+                                (s3.clone(), bucket.clone(), objects.clone());
+                            async move {
+                                let (s3, bucket, objects) =
+                                    (s3.clone(), bucket.clone(), objects.clone());
+                                let n_objects = objects.len();
+                                Ok((
+                                    async move {
+                                        s3.delete_objects(DeleteObjectsRequest {
+                                            bucket,
+                                            delete: Delete {
+                                                objects,
+                                                quiet: None,
+                                            },
+                                            ..Default::default()
+                                        })
+                                        .map_err(|e| e.into())
+                                        .await
+                                    },
+                                    n_objects as u64,
+                                ))
+                            }
+                        },
+                        n_retries,
+                        timeout.clone(),
+                    )
+                    .await?;
+                    timeout.lock().await.update(&report);
+                    progress(report).await;
+                    Ok(())
+                }
             })
     }
     /// Flatten into a stream of Objects.
@@ -196,7 +223,11 @@ where
             stream,
             prefix: _,
         } = self;
-        let timeout = Arc::new(Mutex::new(TimeoutState::new(config.request)));
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(
+            config.algorithm.clone(),
+            config.put_requests.clone(),
+        )));
+        let n_retries = config.algorithm.n_retries;
         let dest_bucket = dest_bucket.unwrap_or_else(|| bucket.clone());
         stream
             .try_filter_map(|response| ok(response.contents))
@@ -224,7 +255,7 @@ where
                             Ok((async move{s3.copy_object(request).context(err::CopyObject).await}, size as u64))
                         }
                     },
-                    10,
+                    n_retries,
                     timeout,
                 )
                 .map_ok(|_| key)
@@ -262,7 +293,11 @@ where
         R: Fn() -> CopyObjectRequest + Clone + Unpin + Sync + Send + 'static,
     {
         let src_bucket = self.bucket.clone();
-        let timeout = Arc::new(Mutex::new(TimeoutState::new(self.config.request.clone())));
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(
+            self.config.algorithm.clone(),
+            self.config.put_requests.clone(),
+        )));
+        let n_retries = self.config.algorithm.n_retries;
         let s3 = self.s3.clone();
         self.copy_all_stream(dest_bucket, mapping, default_request)
             .and_then(move |src_key| {
@@ -287,7 +322,7 @@ where
                             ))
                         }
                     },
-                    10,
+                    n_retries,
                     timeout,
                 )
                 .map_ok(drop)
@@ -426,7 +461,7 @@ mod test {
 
         // Delete all
         algo.list_prefix("test-bucket".into(), String::new())
-            .delete_all()
+            .delete_all(|_| async {})
             .await
             .unwrap();
 

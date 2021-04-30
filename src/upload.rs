@@ -31,9 +31,12 @@ impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
         R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send + 'static,
     {
         let copy_parallelization = self.config.copy_parallelization;
-        let n_retries = self.config.request.n_retries;
+        let n_retries = self.config.algorithm.n_retries;
 
-        let timeout_state = Arc::new(Mutex::new(TimeoutState::new(self.config.request.clone())));
+        let timeout_state = Arc::new(Mutex::new(TimeoutState::new(
+            self.config.algorithm.clone(),
+            self.config.put_requests.clone(),
+        )));
         let timeout_state2 = timeout_state.clone();
 
         let jobs = files.map(move |src| {

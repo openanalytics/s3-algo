@@ -61,40 +61,52 @@ impl<S> S3Algo<S> {
 pub struct RequestReport {
     /// The number of this request in a series of multiple requests (0 if not applicable)
     pub seq: usize,
-    /// Size in bytes of any file or object involved in this request (0 if not applicable)
-    pub bytes: u64,
+    /// Size of request - in bytes or in number of objects, depending on the type of request.
+    pub size: u64,
     /// The total time including all retries
     pub total_time: Duration,
     /// The time of the successful request
     pub success_time: Duration,
     /// Number of attempts. A value of `1` means no retries - success on first attempt.
     pub attempts: usize,
-    /// Estimated bytes/ms upload speed at the initiation of the upload of this file. Useful for
-    /// debugging the upload algorithm and not much more
+    /// Estimated sec/unit that was used in this request. Useful for
+    /// debugging the upload algorithm and not much more.
     pub est: f64,
 }
 
 /// Issue a single S3 request, with retries and appropriate timeouts using sane defaults.
 /// Basically an easier, less general version of `s3_request`.
-/// `size` should be given if the operation is on a file with a certain size. This is necessary in
-/// order to set a suitable timeout to the request. For example, copy or put operations are linear
-/// in the size of the files operated on.
+///
+/// `extra_initial_timeout`: initial timeout of request (will increase with backoff) added to
+/// `cfg.base_timeout`. It can be set to 0 if the S3 operation is a small one, but if the operation
+/// size depends on for example a byte count or object count, set it to something that depends on
+/// that.
 pub async fn s3_single_request<F, G, R>(
     future_factory: F,
-    size: Option<u64>,
+    extra_initial_timeout_s: f64,
 ) -> Result<(RequestReport, R), Error>
 where
     F: Fn() -> G + Unpin + Clone + Send + Sync + 'static,
     G: Future<Output = Result<R, Error>> + Send,
 {
-    let size = size.unwrap_or(0);
+    // Configure a one-time Timeout that gives the desired initial_timeout_s on first try.
+    // We tell `s3_request` that the request is of size `1`
+
+    let timeout = TimeoutState::new(
+        AlgorithmConfig::default(),
+        SpecificTimings {
+            seconds_per_unit: extra_initial_timeout_s,
+            minimum_units_for_estimation: 0, // doesn't matter
+        },
+    );
+
     s3_request(
         move || {
             let factory = future_factory.clone();
-            async move { Ok((factory(), size)) }
+            async move { Ok((factory(), 1)) }
         },
         10,
-        Arc::new(Mutex::new(TimeoutState::new(RequestConfig::default()))),
+        Arc::new(Mutex::new(timeout)),
     )
     .await
 }
@@ -106,10 +118,7 @@ where
 /// future. We need the closure F to run the request multiple times. Its return type G is a future
 /// because it might need to for example open a file using async, which might then be used in H to
 /// stream from the file...
-/// This is needed so that we can get the length of the file before streaming to S3.
-/// The length (u64) can be set to 0 whenever there is no interest in tracking bandwidth.
-/// (in general we are interested in bandwidth of files/objects moving around, not including the
-/// rest of the fields in the request)
+/// This is needed so that we can get e.g. the length of the file before streaming to S3.
 pub(crate) async fn s3_request<F, G, H, T, R>(
     future_factory: F,
     n_retries: usize,
@@ -161,11 +170,11 @@ where
     )
     .await
     .map(
-        move |(((response, success_time, bytes, est), attempts), total_time)| {
+        move |(((response, success_time, size, est), attempts), total_time)| {
             (
                 RequestReport {
                     seq: 0,
-                    bytes,
+                    size,
                     total_time,
                     success_time,
                     attempts,

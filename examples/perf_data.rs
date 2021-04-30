@@ -98,10 +98,10 @@ pub fn upload_perf_log_init<W: Write>(out: &mut W) {
 }
 pub fn upload_perf_log_update<W: Write>(out: &mut W, res: RequestReport) {
     // TODO: Write performance data to file with tokio
-    let megabytes = res.bytes as f64 / 1_000_000.0;
+    let megabytes = res.size as f64 / 1_000_000.0;
     let speed = megabytes / res.success_time.as_secs_f64();
     write_cell!(out, res.attempts);
-    write_cell!(out, res.bytes);
+    write_cell!(out, res.size);
     write_cell!(out, res.success_time.as_millis());
     write_cell!(out, res.total_time.as_millis());
     write_cell!(out, speed);
