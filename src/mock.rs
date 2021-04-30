@@ -1,9 +1,10 @@
 use crate::*;
 use multi_default_trait_impl::{default_trait_impl, trait_impl};
 use rusoto_core::*;
+use rusoto_s3::*;
 use std::{pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
-use tokio::time::sleep;
+use tokio::time::delay_for;
 // Just to be able to easily create mock objects, we create a temporary trait with defaults that
 // panic
 #[default_trait_impl]
@@ -1500,135 +1501,6 @@ impl S3 for S3WithDefaults {
     {
         unimplemented!()
     }
-    fn delete_bucket_intelligent_tiering_configuration<'life0, 'async_trait>(
-        &'life0 self,
-        input: DeleteBucketIntelligentTieringConfigurationRequest,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        (),
-                        RusotoError<DeleteBucketIntelligentTieringConfigurationError>,
-                    >,
-                > + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        unimplemented!()
-    }
-    fn delete_bucket_ownership_controls<'life0, 'async_trait>(
-        &'life0 self,
-        input: DeleteBucketOwnershipControlsRequest,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<(), RusotoError<DeleteBucketOwnershipControlsError>>>
-                + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        unimplemented!()
-    }
-    fn get_bucket_intelligent_tiering_configuration<'life0, 'async_trait>(
-        &'life0 self,
-        input: GetBucketIntelligentTieringConfigurationRequest,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        GetBucketIntelligentTieringConfigurationOutput,
-                        RusotoError<GetBucketIntelligentTieringConfigurationError>,
-                    >,
-                > + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        unimplemented!()
-    }
-    fn get_bucket_ownership_controls<'life0, 'async_trait>(
-        &'life0 self,
-        input: GetBucketOwnershipControlsRequest,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        GetBucketOwnershipControlsOutput,
-                        RusotoError<GetBucketOwnershipControlsError>,
-                    >,
-                > + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        unimplemented!()
-    }
-    fn list_bucket_intelligent_tiering_configurations<'life0, 'async_trait>(
-        &'life0 self,
-        input: ListBucketIntelligentTieringConfigurationsRequest,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        ListBucketIntelligentTieringConfigurationsOutput,
-                        RusotoError<ListBucketIntelligentTieringConfigurationsError>,
-                    >,
-                > + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        unimplemented!()
-    }
-    fn put_bucket_intelligent_tiering_configuration<'life0, 'async_trait>(
-        &'life0 self,
-        input: PutBucketIntelligentTieringConfigurationRequest,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                    Output = Result<(), RusotoError<PutBucketIntelligentTieringConfigurationError>>,
-                > + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        unimplemented!()
-    }
-    fn put_bucket_ownership_controls<'life0, 'async_trait>(
-        &'life0 self,
-        input: PutBucketOwnershipControlsRequest,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<(), RusotoError<PutBucketOwnershipControlsError>>>
-                + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        unimplemented!()
-    }
 }
 
 /// Only defines `put_object`, failing `max_fails` times before succeeding
@@ -1710,7 +1582,7 @@ impl S3WithDefaults for S3MockBps {
         // succeed
         let seconds = input.content_length.unwrap_or(0) as f32 / self.bps;
         Box::pin(async move {
-            sleep(Duration::from_millis((seconds * 1000.0) as u64)).await;
+            delay_for(Duration::from_millis((seconds * 1000.0) as u64)).await;
             Ok(PutObjectOutput::default())
         })
     }
@@ -1740,7 +1612,7 @@ impl S3MockListAndDelete {
 impl S3WithDefaults for S3MockListAndDelete {
     fn list_objects_v2<'life0, 'async_trait>(
         &'life0 self,
-        _input: ListObjectsV2Request,
+        input: ListObjectsV2Request,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<ListObjectsV2Output, RusotoError<ListObjectsV2Error>>>
@@ -1776,14 +1648,14 @@ impl S3WithDefaults for S3MockListAndDelete {
                 ),
                 ..Default::default()
             };
-            sleep(list_time).await;
+            delay_for(list_time).await;
             Ok(response)
         })
     }
 
     fn delete_objects<'life0, 'async_trait>(
         &'life0 self,
-        _input: DeleteObjectsRequest,
+        input: DeleteObjectsRequest,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<DeleteObjectsOutput, RusotoError<DeleteObjectsError>>>
@@ -1797,7 +1669,7 @@ impl S3WithDefaults for S3MockListAndDelete {
     {
         let s = self.clone();
         Box::pin(async move {
-            sleep(s.delete_time).await;
+            delay_for(s.delete_time).await;
             Ok(DeleteObjectsOutput {
                 deleted: Some(vec![]), // ignored for now as it is not used
                 errors: None,
