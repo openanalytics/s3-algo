@@ -15,7 +15,7 @@ use futures::{
 };
 use futures_retry::{FutureRetry, RetryPolicy};
 use futures_stopwatch::try_stopwatch;
-use rusoto_core::{ByteStream, RusotoError};
+use rusoto_core::ByteStream;
 use rusoto_s3::*;
 use snafu::futures::TryFutureExt as S;
 use snafu::ResultExt;

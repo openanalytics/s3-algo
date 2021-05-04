@@ -3,13 +3,13 @@ use futures::future::{ok, ready};
 use futures::stream::Stream;
 use rusoto_core::ByteStream;
 use rusoto_s3::ListObjectsV2Output;
-use snafu::futures::TryStreamExt;
+use snafu::futures::TryFutureExt;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io;
 
-pub type ListObjectsV2Result = Result<ListObjectsV2Output, RusotoError<ListObjectsV2Error>>;
+pub type ListObjectsV2Result = Result<(RequestReport, ListObjectsV2Output), err::Error>;
 
 /// A stream that can list objects, and (using member functions) delete or copy listed files.
 pub struct ListObjects<C, S> {
@@ -57,7 +57,7 @@ where
         )));
         let n_retries = config.algorithm.n_retries;
         stream
-            .try_filter_map(|response| ok(response.contents))
+            .try_filter_map(|response| ok(response.1.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
             .try_flatten()
             .try_filter_map(|obj| {
@@ -65,7 +65,6 @@ where
                 let Object { key, size, .. } = obj;
                 ok(key.and_then(|key| size.map(|size| (key, size))))
             })
-            .context(err::ListObjectsV2)
             .and_then(move |(key, size)| {
                 let (s3, timeout) = (s3.clone(), timeout.clone());
                 let request = GetObjectRequest {
@@ -120,8 +119,10 @@ where
     }
     */
     /// Delete all listed objects.
-    /// In the `progress` closure's argument, the `size` file refers to the number of files
-    /// (attempted) deleted.
+    /// ## The `progress` closure
+    /// The second (bool) argument says whether it's about a List or Delete request:
+    ///  - false: ListObjectsV2 request
+    ///  - true: DeleteObjects request
     pub fn delete_all<P, F>(self, progress: P) -> impl Future<Output = Result<(), Error>>
     where
         P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
@@ -141,8 +142,13 @@ where
         )));
         let n_retries = config.algorithm.n_retries;
         stream
-            .filter_map(|response| ready(response.map(|r| r.contents).transpose()))
-            .map_err(|e| e.into())
+            .filter_map(|response| ready(response.map(|r| r.1.contents).transpose()))
+            .map_ok(move |contents| {
+                // ListObjectsv2 done - report progress
+                // TODO NEXT
+
+                contents
+            })
             .try_for_each_concurrent(None, move |contents| {
                 let (s3, bucket, timeout, progress) = (
                     s3.clone(),
@@ -159,6 +165,7 @@ where
                         })
                     })
                     .collect::<Vec<_>>();
+                let n_objects = objects.len();
                 async move {
                     let (report, _) = s3_request(
                         move || {
@@ -167,7 +174,6 @@ where
                             async move {
                                 let (s3, bucket, objects) =
                                     (s3.clone(), bucket.clone(), objects.clone());
-                                let n_objects = objects.len();
                                 Ok((
                                     async move {
                                         s3.delete_objects(DeleteObjectsRequest {
@@ -196,9 +202,9 @@ where
             })
     }
     /// Flatten into a stream of Objects.
-    pub fn flatten(self) -> impl TryStream<Ok = Object, Error = RusotoError<ListObjectsV2Error>> {
+    pub fn flatten(self) -> impl TryStream<Ok = Object, Error = Error> {
         self.stream
-            .try_filter_map(|response| ok(response.contents))
+            .try_filter_map(|response| ok(response.1.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
             .try_flatten()
     }
@@ -230,7 +236,7 @@ where
         let n_retries = config.algorithm.n_retries;
         let dest_bucket = dest_bucket.unwrap_or_else(|| bucket.clone());
         stream
-            .try_filter_map(|response| ok(response.contents))
+            .try_filter_map(|response| ok(response.1.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
             .try_flatten()
             .try_filter_map(|obj| {
@@ -238,7 +244,6 @@ where
                 let Object { key, size, .. } = obj;
                 ok(key.and_then(|key| size.map(|size| (key, size))))
             })
-            .context(err::ListObjectsV2)
             .and_then(move |(key, size)| {
                 let (s3, timeout) = (s3.clone(), timeout.clone());
                 let request = CopyObjectRequest {
@@ -360,7 +365,7 @@ where
     }
 }
 
-impl<S: S3 + Clone + Send + Sync + 'static> S3Algo<S> {
+impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
     /// List all objects with a certain prefix
     pub fn list_prefix(
         &self,
@@ -389,8 +394,13 @@ impl<S: S3 + Clone + Send + Sync + 'static> S3Algo<S> {
         request_factory: F,
     ) -> ListObjects<S, impl Stream<Item = ListObjectsV2Result> + Sized + Send>
     where
-        F: Fn() -> ListObjectsV2Request + Send + Sync + Clone,
+        F: Fn() -> ListObjectsV2Request + Send + Sync + Clone + Unpin + 'static,
     {
+        let n_retries = self.config.algorithm.n_retries;
+        let timeout = Arc::new(Mutex::new(TimeoutState::new(
+            self.config.algorithm.clone(),
+            self.config.delete_requests.clone(),
+        )));
         let s3_1 = self.s3.clone();
         let stream = futures::stream::unfold(
             // Initial state = (next continuation token, first request)
@@ -399,18 +409,38 @@ impl<S: S3 + Clone + Send + Sync + 'static> S3Algo<S> {
             //    - the stream will yield ListObjectsV2Output
             //      and stop when there is nothing left to list
             move |(cont, first)| {
-                let (s3, request_factory) = (s3_1.clone(), request_factory.clone());
+                let (s3, request_factory, timeout) =
+                    (s3_1.clone(), request_factory.clone(), timeout.clone());
                 async move {
                     if let (&None, false) = (&cont, first) {
                         None
                     } else {
-                        let result = s3
-                            .list_objects_v2(ListObjectsV2Request {
-                                continuation_token: cont,
-                                ..request_factory()
-                            })
-                            .await;
-                        let next_cont = if let Ok(ref response) = result {
+                        let result = s3_request(
+                            move || {
+                                let (s3, request_factory, cont) =
+                                    (s3.clone(), request_factory.clone(), cont.clone());
+                                // clone
+                                async move {
+                                    let (s3, request_factory, cont) =
+                                        (s3.clone(), request_factory.clone(), cont.clone());
+                                    Ok((
+                                        async move {
+                                            s3.list_objects_v2(ListObjectsV2Request {
+                                                continuation_token: cont,
+                                                ..request_factory()
+                                            })
+                                            .context(err::ListObjectsV2)
+                                            .await
+                                        },
+                                        1000, // Number of objects: assume worst case
+                                    ))
+                                }
+                            },
+                            n_retries,
+                            timeout.clone(),
+                        )
+                        .await;
+                        let next_cont = if let Ok((_, ref response)) = result {
                             response.next_continuation_token.clone()
                         } else {
                             None

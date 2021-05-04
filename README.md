@@ -1,6 +1,9 @@
 # `s3-algo`
 
-High-performance algorithms for batch operations in Amazon S3, on top of [rusoto](https://github.com/rusoto/rusoto)
+High-performance algorithms for batch operations in Amazon S3, on top of [rusoto](https://github.com/rusoto/rusoto).
+Reliability and performance achieved through a configurable timeout/retry/backoff algorithm, for high volumn of requests.
+Monitor progress closely with closures that get called for every finished request, for accurate user feedback.
+
 
 https://docs.aws.amazon.com/AmazonS3/latest/dev/optimizing-performance-guidelines.html
 
