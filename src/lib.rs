@@ -62,7 +62,7 @@ pub struct RequestReport {
     /// The number of this request in a series of multiple requests (0 if not applicable)
     pub seq: usize,
     /// Size of request - in bytes or in number of objects, depending on the type of request.
-    pub size: u64,
+    pub size: usize,
     /// The total time including all retries
     pub total_time: Duration,
     /// The time of the successful request
@@ -105,6 +105,7 @@ where
             let factory = future_factory.clone();
             async move { Ok((factory(), 1)) }
         },
+        |_, size| size,
         10,
         Arc::new(Mutex::new(timeout)),
     )
@@ -119,15 +120,27 @@ where
 /// because it might need to for example open a file using async, which might then be used in H to
 /// stream from the file...
 /// This is needed so that we can get e.g. the length of the file before streaming to S3.
-pub(crate) async fn s3_request<F, G, H, T, R>(
+///
+/// `get_size(report, expected)`: get the real size of the request. For some types of requests
+/// (e.g. DeleteObjects/PutObject), we know the size upfront, so real size = expected.
+/// For others (ListObjectsV2), we need to result of the action to know the size.
+/// The size returned from this function is only used to construct the `RequestReport`, which in
+/// turn is only useful for eventual progress closures. So the existence of `get_size` parameter is
+/// due to the feature of monitoring progress.
+///
+/// The "expected" size returned by `future_factory` on the other hand is needed to calculate the
+/// timeout.
+pub(crate) async fn s3_request<F, G, H, T, R, S>(
     future_factory: F,
+    get_size: S,
     n_retries: usize,
     timeout: Arc<Mutex<T>>,
 ) -> Result<(RequestReport, R), Error>
 where
     F: Fn() -> G + Unpin + Clone + Send + Sync + 'static,
-    G: Future<Output = Result<(H, u64), Error>> + Send,
+    G: Future<Output = Result<(H, usize), Error>> + Send,
     H: Future<Output = Result<R, Error>> + Send,
+    S: Fn(&R, usize) -> usize + Unpin + Clone + Send + Sync + 'static,
     T: timeout::Timeout,
 {
     let mut attempts1 = 0;
@@ -137,21 +150,25 @@ where
         FutureRetry::new(
             // Future factory - creates a future that reads file while uploading it
             move || {
-                let future_factory = future_factory.clone();
-                let timeout = timeout.clone();
+                let (future_factory, timeout, get_size) =
+                    (future_factory.clone(), timeout.clone(), get_size.clone());
+
                 async move {
                     attempts1 += 1;
-                    let (request, len) = future_factory().await?;
+                    let (request, expected_size) = future_factory().await?;
                     let (est, timeout_value) = {
                         let t = timeout.lock().await;
-                        (t.get_estimate(), t.get_timeout(len, attempts1))
+                        (t.get_estimate(), t.get_timeout(expected_size, attempts1))
                     };
                     try_stopwatch(
                         tokio::time::timeout(timeout_value, request)
                             .with_context(|| err::Timeout {})
                             .map(|result| result.and_then(|x| x)), // flatten the Result<Result<(), err>, timeout err>
                     )
-                    .map_ok(move |(response, success_time)| (response, success_time, len, est))
+                    .map_ok(move |(response, success_time)| {
+                        let real_size = get_size(&response, expected_size);
+                        (response, success_time, real_size, est)
+                    })
                     .await
                 }
             },

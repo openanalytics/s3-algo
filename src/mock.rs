@@ -1,7 +1,6 @@
 use crate::*;
 use multi_default_trait_impl::{default_trait_impl, trait_impl};
 use rusoto_core::*;
-use rusoto_s3::*;
 use std::{pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use tokio::time::delay_for;
@@ -1612,7 +1611,7 @@ impl S3MockListAndDelete {
 impl S3WithDefaults for S3MockListAndDelete {
     fn list_objects_v2<'life0, 'async_trait>(
         &'life0 self,
-        input: ListObjectsV2Request,
+        _input: ListObjectsV2Request,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<ListObjectsV2Output, RusotoError<ListObjectsV2Error>>>
@@ -1635,7 +1634,6 @@ impl S3WithDefaults for S3MockListAndDelete {
                     Some(String::new())
                 }
             };
-            let list_time = s.list_time.clone();
             let response = ListObjectsV2Output {
                 next_continuation_token,
                 contents: Some(
@@ -1648,14 +1646,14 @@ impl S3WithDefaults for S3MockListAndDelete {
                 ),
                 ..Default::default()
             };
-            delay_for(list_time).await;
+            delay_for(s.list_time).await;
             Ok(response)
         })
     }
 
     fn delete_objects<'life0, 'async_trait>(
         &'life0 self,
-        input: DeleteObjectsRequest,
+        _input: DeleteObjectsRequest,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<DeleteObjectsOutput, RusotoError<DeleteObjectsError>>>

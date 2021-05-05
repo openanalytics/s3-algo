@@ -73,7 +73,7 @@ pub struct SpecificTimings {
     /// The initial estimate of extra timeout per unit (byte or object)
     pub seconds_per_unit: f64,
     /// The amount of units in a request, below which it does not affect estimation
-    pub minimum_units_for_estimation: u64,
+    pub minimum_units_for_estimation: usize,
 }
 
 impl SpecificTimings {

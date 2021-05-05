@@ -4,7 +4,7 @@ use crate::{config::*, RequestReport};
 use std::time::Duration;
 pub trait Timeout: Send + 'static {
     /// Size is in either bytes or objects, depending on the type of requests.
-    fn get_timeout(&self, size: u64, retries: usize) -> Duration;
+    fn get_timeout(&self, size: usize, retries: usize) -> Duration;
     /// Update the internal estimate of the extra timeout per unit of size
     fn update(&mut self, _: &RequestReport);
     /// get estimated upload speed
@@ -31,7 +31,7 @@ impl Timeout for TimeoutState {
     fn get_estimate(&self) -> f64 {
         self.seconds_per_unit_estimate
     }
-    fn get_timeout(&self, size: u64, retries: usize) -> Duration {
+    fn get_timeout(&self, size: usize, retries: usize) -> Duration {
         let backoff = self.cfg.backoff.powi(retries as i32);
         let time_estimate = (size as f64) * self.seconds_per_unit_estimate * backoff;
         Duration::from_secs_f64(

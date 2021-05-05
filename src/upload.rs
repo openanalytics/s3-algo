@@ -46,6 +46,7 @@ impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
                     src.clone()
                         .create_upload_future(s3.clone(), bucket.clone(), default.clone())
                 },
+                |_, size| size,
                 n_retries,
                 timeout_state.clone(),
             )
@@ -87,7 +88,7 @@ impl ObjectSource {
             key,
         }
     }
-    pub async fn create_stream(&self) -> Result<(ByteStream, u64), Error> {
+    pub async fn create_stream(&self) -> Result<(ByteStream, usize), Error> {
         match self {
             Self::File { path, .. } => {
                 let file = tokio::fs::File::open(path.clone()).await.with_context({
@@ -103,7 +104,7 @@ impl ObjectSource {
                     }
                 })?;
 
-                let len = metadata.len();
+                let len = metadata.len() as usize;
 
                 Ok((
                     ByteStream::new(
@@ -112,7 +113,7 @@ impl ObjectSource {
                     len,
                 ))
             }
-            Self::Data { data, .. } => Ok((data.clone().into(), data.len() as u64)),
+            Self::Data { data, .. } => Ok((data.clone().into(), data.len())),
         }
     }
     pub async fn create_upload_future<C, R>(
@@ -120,7 +121,7 @@ impl ObjectSource {
         s3: C,
         bucket: String,
         default: R,
-    ) -> Result<(impl Future<Output = Result<(), Error>>, u64), Error>
+    ) -> Result<(impl Future<Output = Result<(), Error>>, usize), Error>
     where
         C: S3 + Clone,
         R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,

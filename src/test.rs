@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 /// Timeout implementation used for testing
 struct TimeoutState;
 impl Timeout for TimeoutState {
-    fn get_timeout(&self, _bytes: u64, _attempts: usize) -> Duration {
+    fn get_timeout(&self, _bytes: usize, _attempts: usize) -> Duration {
         Duration::from_secs(4)
     }
     fn update(&mut self, _: &RequestReport) {}
@@ -42,6 +42,7 @@ fn everything_is_sync_and_static() {
 
     verify(s3_request(
         || async move { Ok((async move { Ok(()) }, 0)) },
+        |_, size| size,
         5,
         Arc::new(Mutex::new(TimeoutState::new(
             AlgorithmConfig::default(),
@@ -138,7 +139,7 @@ async fn test_s3_single_request() {
     // Test timeout of a single request - that it is not too low
 
     const ACTUAL_SPEED: f32 = 5_000_000.0; // bytes per sec
-    const SIZE: u64 = 5_000_000;
+    const SIZE: usize = 5_000_000;
     let dir = tempdir::TempDir::new("testing").unwrap();
     let path = dir.path().join("file.txt");
     std::fs::write(&path, "file contents").unwrap();
@@ -174,7 +175,7 @@ async fn test_s3_timeouts() {
     // TODO finish test
     // Currently just prints things to inspect how timeout behaves
 
-    let bytes: Vec<u64> = vec![500_000, 999_999, 1_000_001, 2_000_000];
+    let bytes: Vec<usize> = vec![500_000, 999_999, 1_000_001, 2_000_000];
     // Test that timeout on successive errors follows a desired curve
 
     // These are all parameters related to timeout, shown explicitly
@@ -210,7 +211,7 @@ async fn test_delete_files_parallelization() {
 
     let start = Instant::now();
     algo.list_prefix("test-bucket".to_string(), "some/prefix".to_string())
-        .delete_all(|_| async {})
+        .delete_all(|_| async {}, |_| async {})
         .await
         .unwrap();
     let duration = Instant::now() - start;

@@ -35,6 +35,29 @@ where
             prefix: self.prefix,
         }
     }
+
+    /// Calls an async closure on all the individual objects of the list operation
+    pub async fn process<P, F>(self, f: P) -> Result<(), Error>
+    where
+        P: Fn(Object) -> F + Clone,
+        F: Future<Output = ()>,
+    {
+        let ListObjects {
+            stream, prefix: _, ..
+        } = self;
+        stream
+            .try_filter_map(|response| ok(response.1.contents))
+            .map_ok(|x| stream::iter(x).map(Ok))
+            .try_flatten()
+            .try_for_each_concurrent(None, move |object| {
+                let f = f.clone();
+                async move {
+                    f(object).await;
+                    Ok(())
+                }
+            })
+            .await
+    }
     /// Download all listed objects - returns a stream of the contents.
     /// Used as a basis for other `download_all_*` functions.
     pub fn download_all_stream<R>(
@@ -79,10 +102,11 @@ where
                             let (s3, request) = (s3.clone(), request.clone());
                             Ok((
                                 async move { s3.get_object(request).context(err::GetObject).await },
-                                size as u64,
+                                size as usize,
                             ))
                         }
                     },
+                    |_, size| size,
                     n_retries,
                     timeout,
                 )
@@ -123,10 +147,16 @@ where
     /// The second (bool) argument says whether it's about a List or Delete request:
     ///  - false: ListObjectsV2 request
     ///  - true: DeleteObjects request
-    pub fn delete_all<P, F>(self, progress: P) -> impl Future<Output = Result<(), Error>>
+    pub fn delete_all<P1, P2, F1, F2>(
+        self,
+        list_progress: P1,
+        delete_progress: P2,
+    ) -> impl Future<Output = Result<(), Error>>
     where
-        P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
-        F: Future<Output = ()> + Send + 'static,
+        P1: Fn(RequestReport) -> F1 + Clone + Send + Sync + 'static,
+        P2: Fn(RequestReport) -> F2 + Clone + Send + Sync + 'static,
+        F1: Future<Output = ()> + Send + 'static,
+        F2: Future<Output = ()> + Send + 'static,
     {
         // For each ListObjectsV2Output, send a request to delete all the listed objects
         let ListObjects {
@@ -142,19 +172,27 @@ where
         )));
         let n_retries = config.algorithm.n_retries;
         stream
-            .filter_map(|response| ready(response.map(|r| r.1.contents).transpose()))
-            .map_ok(move |contents| {
-                // ListObjectsv2 done - report progress
-                // TODO NEXT
-
-                contents
+            .filter_map(|result| {
+                ready(
+                    result
+                        .map(|(report, response)| response.contents.map(|r| (report, r)))
+                        .transpose(),
+                )
+            })
+            .and_then(move |(report, contents)| {
+                // Report progress in listing objects
+                let list_progress = list_progress.clone();
+                async move {
+                    list_progress(report).await;
+                    Ok(contents)
+                }
             })
             .try_for_each_concurrent(None, move |contents| {
-                let (s3, bucket, timeout, progress) = (
+                let (s3, bucket, timeout, del_progress) = (
                     s3.clone(),
                     bucket.clone(),
                     timeout.clone(),
-                    progress.clone(),
+                    delete_progress.clone(),
                 );
                 let objects = contents
                     .iter()
@@ -187,16 +225,17 @@ where
                                         .map_err(|e| e.into())
                                         .await
                                     },
-                                    n_objects as u64,
+                                    n_objects,
                                 ))
                             }
                         },
+                        |_, size| size,
                         n_retries,
                         timeout.clone(),
                     )
                     .await?;
                     timeout.lock().await.update(&report);
-                    progress(report).await;
+                    del_progress(report).await;
                     Ok(())
                 }
             })
@@ -257,9 +296,10 @@ where
                         let (s3, request) = (s3.clone(), request.clone());
                         async move {
                             let (s3, request) = (s3.clone(), request.clone());
-                            Ok((async move{s3.copy_object(request).context(err::CopyObject).await}, size as u64))
+                            Ok((async move{s3.copy_object(request).context(err::CopyObject).await}, size as usize))
                         }
                     },
+                    |_, size| size,
                     n_retries,
                     timeout,
                 )
@@ -300,7 +340,7 @@ where
         let src_bucket = self.bucket.clone();
         let timeout = Arc::new(Mutex::new(TimeoutState::new(
             self.config.algorithm.clone(),
-            self.config.put_requests.clone(),
+            self.config.delete_requests.clone(),
         )));
         let n_retries = self.config.algorithm.n_retries;
         let s3 = self.s3.clone();
@@ -323,10 +363,11 @@ where
                                         .context(err::DeleteObject)
                                         .await
                                 },
-                                0,
+                                1,
                             ))
                         }
                     },
+                    |_, _| 1,
                     n_retries,
                     timeout,
                 )
@@ -436,6 +477,7 @@ impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
                                     ))
                                 }
                             },
+                            |output, _| output.contents.as_ref().map(Vec::len).unwrap_or(0),
                             n_retries,
                             timeout.clone(),
                         )
@@ -464,17 +506,20 @@ impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
 mod test {
     use super::*;
     use crate::test::rand_string;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     #[tokio::test]
-    async fn test_s3_delete_files() {
+    async fn test_s3_delete_files_progress() {
         // Minio does paging at 10'000 fles, so we need more than that.
         // It means this test will take a minutes or two.
         let s3 = testing_s3_client();
         let algo = S3Algo::new(s3);
         let dir = rand_string(14);
+        let dir2 = dir.clone();
         const N_FILES: usize = 11_000;
         let files = (0..N_FILES).map(move |i| ObjectSource::Data {
             data: vec![1, 2, 3],
-            key: format!("{}/{}.file", dir, i),
+            key: format!("{}/{}.file", dir2, i),
         });
         algo.upload_files(
             "test-bucket".into(),
@@ -489,15 +534,75 @@ mod test {
         .await
         .unwrap();
 
+        let listed_files = Arc::new(AtomicUsize::new(0));
+        let deleted_files = Arc::new(AtomicUsize::new(0));
+        let listed_files2 = listed_files.clone();
+        let deleted_files2 = deleted_files.clone();
+
+        // Do one listing only to check the exact file names
+        let present = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        algo.list_prefix("test-bucket".into(), String::new())
+            .process(|object| async {
+                let name = object.key.unwrap_or_else(|| "NONE".to_string());
+                println!("OBJ {}", name);
+                present.lock().await.insert(name);
+            })
+            .await
+            .unwrap();
+        let mut present = present.lock().await;
+
+        // All files are present
+        for i in 0..N_FILES {
+            let file_name = &format!("{}/{}.file", dir, i);
+            assert!(present.remove(file_name));
+        }
+
+        // No unexpected filesnames.
+        // Because once, it listed 11_200 files instead of 11_000
+        if !present.is_empty() {
+            println!("Left-over object names: {:?}", present);
+            panic!("Not empty");
+        }
+
+        // Assert that number of files is N_FILES
+        let count = algo
+            .list_prefix("test-bucket".into(), dir.clone())
+            .flatten()
+            .try_fold(0usize, |acc, _| ok(acc + 1))
+            .await
+            .unwrap();
+        assert_eq!(count, N_FILES);
+
         // Delete all
         algo.list_prefix("test-bucket".into(), String::new())
-            .delete_all(|_| async {})
+            .delete_all(
+                move |list_rep| {
+                    let n = list_rep.size as usize;
+                    println!("Listed {} items", n);
+                    let listed_files = listed_files2.clone();
+                    async move {
+                        listed_files.fetch_add(n, Ordering::Relaxed);
+                    }
+                },
+                move |del_rep| {
+                    let n = del_rep.size as usize;
+                    println!("Deleted {} items", n);
+                    let deleted_files = deleted_files2.clone();
+                    async move {
+                        deleted_files.fetch_add(n, Ordering::Relaxed);
+                    }
+                },
+            )
             .await
             .unwrap();
 
-        // List
+        // Assert number of objects listed and deleted
+        assert_eq!(listed_files.load(Ordering::Relaxed), N_FILES);
+        assert_eq!(deleted_files.load(Ordering::Relaxed), N_FILES);
+
+        // Assert that number of files is 0
         let count = algo
-            .list_prefix("test-bucket".into(), String::new())
+            .list_prefix("test-bucket".into(), dir)
             .flatten()
             .try_fold(0usize, |acc, _| ok(acc + 1))
             .await
