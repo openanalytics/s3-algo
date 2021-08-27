@@ -541,7 +541,7 @@ mod test {
 
         // Do one listing only to check the exact file names
         let present = Arc::new(Mutex::new(std::collections::HashSet::new()));
-        algo.list_prefix("test-bucket".into(), String::new())
+        algo.list_prefix("test-bucket".into(), dir.clone())
             .process(|object| async {
                 let name = object.key.unwrap_or_else(|| "NONE".to_string());
                 println!("OBJ {}", name);
@@ -561,7 +561,7 @@ mod test {
         // Because once, it listed 11_200 files instead of 11_000
         if !present.is_empty() {
             println!("Left-over object names: {:?}", present);
-            panic!("Not empty");
+            panic!("Not empty ({} files)", present.len());
         }
 
         // Assert that number of files is N_FILES
@@ -574,7 +574,7 @@ mod test {
         assert_eq!(count, N_FILES);
 
         // Delete all
-        algo.list_prefix("test-bucket".into(), String::new())
+        algo.list_prefix("test-bucket".into(), dir.clone())
             .delete_all(
                 move |list_rep| {
                     let n = list_rep.size as usize;

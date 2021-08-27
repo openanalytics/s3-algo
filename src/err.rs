@@ -15,7 +15,7 @@ pub enum Error {
     /// Error originating from tokio::Delay
     #[snafu(display("Tokio timer error: {}", source))]
     Delay {
-        source: tokio::time::Error,
+        source: tokio::time::error::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("S3 'put object' error on key '{}': {}", key, source))]
@@ -26,7 +26,7 @@ pub enum Error {
     },
     #[snafu(display("S3 operation timed out"))]
     Timeout {
-        source: tokio::time::Elapsed,
+        source: tokio::time::error::Elapsed,
     },
     #[snafu(display("Error listing objects in S3: {:?}", source))]
     ListObjectsV2 {
@@ -71,13 +71,11 @@ mod test {
     use snafu::GenerateBacktrace;
     #[test]
     fn error_traits() {
-        fn foo<T: Send>(_: T) {
-        }
+        fn foo<T: Send>(_: T) {}
         foo(Error::Io {
             source: io::Error::from_raw_os_error(1),
             description: "hello".into(),
             backtrace: Backtrace::generate(),
         });
     }
-
 }

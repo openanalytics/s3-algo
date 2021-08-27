@@ -145,8 +145,8 @@ impl ObjectSource {
     }
     pub fn get_key(&self) -> &str {
         match self {
-            Self::File { key, .. } => &key,
-            Self::Data { key, .. } => &key,
+            Self::File { key, .. } => key,
+            Self::Data { key, .. } => key,
         }
     }
 }
