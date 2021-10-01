@@ -241,7 +241,7 @@ where
             })
     }
     /// Flatten into a stream of Objects.
-    pub fn flatten(self) -> impl TryStream<Ok = Object, Error = Error> {
+    pub fn flatten(self) -> impl Stream<Item = Result<Object, Error>> {
         self.stream
             .try_filter_map(|response| ok(response.1.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
