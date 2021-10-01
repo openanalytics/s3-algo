@@ -291,6 +291,7 @@ where
                     key: mapping(&key),
                     ..default_request()
                 };
+                // println!("COPY REQUEST\n{:#?}", request);
                 s3_request(
                     move || {
                         let (s3, request) = (s3.clone(), request.clone());

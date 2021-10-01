@@ -28,6 +28,7 @@ pub(crate) fn rand_string(n: usize) -> String {
     rand::thread_rng()
         .sample_iter(&rand::distributions::Alphanumeric)
         .take(n)
+        .map(|x| x as char)
         .collect::<String>()
 }
 
@@ -309,5 +310,52 @@ async fn test_move_files() {
             ..Default::default()
         });
         let _ = response.await.unwrap_err();
+    }
+}
+
+#[tokio::test]
+async fn test_copy_files() {
+    const N_FILES: usize = 100;
+    let s3 = testing_s3_client();
+    let algo = S3Algo::new(s3.clone());
+    let tmp_dir = TempDir::new("s3-testing").unwrap();
+    let prefix = upload_test_files(algo.clone(), tmp_dir.path(), N_FILES)
+        .await
+        .unwrap();
+
+    let n = Arc::new(std::sync::Mutex::new(0_usize));
+    let m = n.clone();
+    algo.list_prefix("test-bucket".into(), prefix.to_str().unwrap().to_owned())
+        .boxed() // hope we can remove boxed() soon (it's for reducing type size)
+        .copy_all(
+            Some("test-bucket2".into()),
+            move |key| {
+                *m.lock().unwrap() += 1;
+                format!("test_copy_files/{}", key)
+            },
+            Default::default,
+        )
+        .boxed()
+        .await
+        .unwrap();
+    assert_eq!(*n.lock().unwrap(), N_FILES);
+
+    // Check that all objects are present in both buckets
+    for i in 0..N_FILES {
+        let key = format!("test_copy_files/{}/img_{}.tif", prefix.display(), i);
+        let response = s3.get_object(GetObjectRequest {
+            bucket: "test-bucket2".to_string(),
+            key,
+            ..Default::default()
+        });
+        let _ = response.await.unwrap();
+
+        let key = prefix.join(format!("img_{}.tif", i));
+        let response = s3.get_object(GetObjectRequest {
+            bucket: "test-bucket".to_string(),
+            key: key.to_str().unwrap().to_string(),
+            ..Default::default()
+        });
+        let _ = response.await.unwrap();
     }
 }
