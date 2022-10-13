@@ -26,7 +26,7 @@ async fn main() {
         )
         .arg(
             Arg::with_name("parallelization")
-                .short("n")
+                .short('n')
                 .takes_value(true)
                 .help("Maximum number of simultaneous upload requests"),
         );
