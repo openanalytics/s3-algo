@@ -1,17 +1,20 @@
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Maximum number of simultaneous upload requests
     pub copy_parallelization: usize,
 
     pub algorithm: AlgorithmConfig,
 
+    /// The "unit" of a delete request is number of objects
     pub delete_requests: SpecificTimings,
 
     /// NOTE: For now, `put_request` is used both in S3 `get`, `put` and `copy` operations.
     /// Reason: We don't know if it's worth it with different configurations for these operations
     /// that all have a duration that depends on the number of bytes of the objects in question.
+    /// The "unit" for such requests are number of bytes.
     pub put_requests: SpecificTimings,
 }
 
@@ -33,6 +36,7 @@ impl Default for Config {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AlgorithmConfig {
     /// The base timeout which will always be there (an estimate of RTT)
     pub base_timeout: f64,
@@ -60,9 +64,7 @@ impl Default for AlgorithmConfig {
             timeout_fraction: 1.5,
             backoff: 1.5,
             n_retries: 8,
-            // expected_upload_speed: 1.0,
             avg_power: 0.7,
-            // avg_min_bytes: 1_000_000,
         }
     }
 }

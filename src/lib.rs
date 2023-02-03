@@ -40,7 +40,7 @@ mod mock;
 mod test;
 
 #[derive(Clone)]
-pub struct S3Algo<S> {
+pub struct S3Algo<S = S3Client> {
     s3: S,
     config: Config,
 }
