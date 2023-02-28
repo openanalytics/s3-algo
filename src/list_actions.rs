@@ -63,7 +63,7 @@ where
     pub fn download_all_stream<R>(
         self,
         default_request: R,
-    ) -> impl Stream<Item = Result<(String, ByteStream), Error>>
+    ) -> impl Stream<Item = Result<(String, ByteStream, i64), Error>>
     where
         R: Fn() -> GetObjectRequest + Clone + Unpin + Sync + Send + 'static,
     {
@@ -83,10 +83,18 @@ where
             .try_filter_map(|response| ok(response.1.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
             .try_flatten()
-            .try_filter_map(|obj| {
+            .map(|result| {
+                result.and_then(|obj| {
+                    let Object { key, size, .. } = obj;
+                    if let (Some(key), Some(size)) = (key, size) {
+                        Ok((key, size))
+                    } else {
+                        Err(err::Error::MissingKeyOrSize)
+                    }
+                })
                 // Just filter out any object that does not have both of `key` and `size`
-                let Object { key, size, .. } = obj;
-                ok(key.and_then(|key| size.map(|size| (key, size))))
+                // let Object { key, size, .. } = obj;
+                // ok(key.and_then(|key| size.map(|size| (key, size))))
             })
             .and_then(move |(key, size)| {
                 let (s3, timeout) = (s3.clone(), timeout.clone());
@@ -111,10 +119,18 @@ where
                     timeout,
                 )
                 // Include key in the Item, and turn Option around the entire Item
-                .map_ok(|response| response.1.body.map(|body| (key, body)))
+                .map(|result| {
+                    result.and_then(|response| {
+                        if let (Some(body), Some(content_length)) =
+                            (response.1.body, response.1.content_length)
+                        {
+                            Ok((key, body, content_length))
+                        } else {
+                            Err(err::Error::MissingContentLength)
+                        }
+                    })
+                })
             })
-            // Remove those responses that have no body
-            .try_filter_map(ok)
     }
 
     pub fn download_all_to_vec<R>(
@@ -125,7 +141,7 @@ where
         R: Fn() -> GetObjectRequest + Clone + Unpin + Sync + Send + 'static,
     {
         self.download_all_stream(default_request)
-            .and_then(|(key, body)| async move {
+            .and_then(|(key, body, _)| async move {
                 let mut contents = vec![];
                 io::copy(&mut body.into_async_read(), &mut contents)
                     .await

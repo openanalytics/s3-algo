@@ -52,6 +52,11 @@ pub enum Error {
     AnyError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+
+    #[snafu(display("Downloading objects: missing key or size property"))]
+    MissingKeyOrSize,
+    #[snafu(display("Downloading objects: missing content_length property"))]
+    MissingContentLength,
 }
 
 impl<T> From<RusotoError<T>> for Error
