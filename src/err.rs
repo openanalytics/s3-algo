@@ -25,9 +25,7 @@ pub enum Error {
         backtrace: Backtrace,
     },
     #[snafu(display("S3 operation timed out"))]
-    Timeout {
-        source: tokio::time::error::Elapsed,
-    },
+    Timeout { source: tokio::time::error::Elapsed },
     #[snafu(display("Error listing objects in S3: {:?}", source))]
     ListObjectsV2 {
         source: RusotoError<ListObjectsV2Error>,
@@ -42,13 +40,14 @@ pub enum Error {
     CopyObject {
         source: RusotoError<CopyObjectError>,
     },
+    #[snafu(display("GetObject s3://{}/{}: {:#?}", bucket, key, source))]
     GetObject {
+        key: String,
+        bucket: String,
         source: RusotoError<GetObjectError>,
     },
     #[snafu(display("IO error: {}", source))]
-    TokioIo {
-        source: tokio::io::Error,
-    },
+    TokioIo { source: tokio::io::Error },
     AnyError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },

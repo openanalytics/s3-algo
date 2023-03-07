@@ -92,9 +92,6 @@ where
                         Err(err::Error::MissingKeyOrSize)
                     }
                 })
-                // Just filter out any object that does not have both of `key` and `size`
-                // let Object { key, size, .. } = obj;
-                // ok(key.and_then(|key| size.map(|size| (key, size))))
             })
             .and_then(move |(key, size)| {
                 let (s3, timeout) = (s3.clone(), timeout.clone());
@@ -109,7 +106,14 @@ where
                         async move {
                             let (s3, request) = (s3.clone(), request.clone());
                             Ok((
-                                async move { s3.get_object(request).context(err::GetObject).await },
+                                async move {
+                                    s3.get_object(request.clone())
+                                        .with_context(|| err::GetObject {
+                                            key: request.key.clone(),
+                                            bucket: request.bucket.clone(),
+                                        })
+                                        .await
+                                },
                                 size as usize,
                             ))
                         }
