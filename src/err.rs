@@ -66,6 +66,37 @@ pub enum Error {
     MissingKeyOrSize,
     #[snafu(display("Downloading objects: missing content_length property"))]
     MissingContentLength,
+
+    // AWS SDK Errors
+    #[snafu(display("S3 'put object' error on key '{}': {}", key, source))]
+    NewPutObject {
+        source: SdkError<PutObjectError>,
+        key: String,
+        backtrace: Backtrace,
+    },
+
+    #[snafu(display("Error listing objects in S3: {:?}", source))]
+    NewListObjectsV2 {
+        source: SdkError<ListObjectsV2Error>,
+    },
+
+    #[snafu(display("Error deleting objects in S3: {:?}", source))]
+    NewDeleteObjects {
+        source: SdkError<DeleteObjectsError>,
+    },
+    NewDeleteObject {
+        source: SdkError<DeleteObjectError>,
+    },
+    NewCopyObject {
+        source: SdkError<CopyObjectError>,
+    },
+    #[snafu(display("GetObject s3://{}/{}: {:#?}", bucket, key, source))]
+    NewGetObject {
+        key: String,
+        bucket: String,
+        source: SdkError<GetObjectError>,
+    },
+
 }
 
 impl<T> From<RusotoError<T>> for Error
@@ -73,6 +104,17 @@ where
     T: std::error::Error + Send + Sync + 'static,
 {
     fn from(err: RusotoError<T>) -> Self {
+        Self::AnyError {
+            source: Box::new(err),
+        }
+    }
+}
+
+impl<T> From<SdkError<T>> for Error
+where
+    T: std::error::Error + Send + Sync + 'static,
+{
+    fn from(err: SdkError<T>) -> Self {
         Self::AnyError {
             source: Box::new(err),
         }
