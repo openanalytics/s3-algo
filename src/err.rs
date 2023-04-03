@@ -1,5 +1,11 @@
+use aws_sdk_s3::{
+    error::{
+        CopyObjectError, DeleteObjectError, DeleteObjectsError, GetObjectError, ListObjectsV2Error,
+    },
+    types::SdkError,
+};
 use rusoto_core::RusotoError;
-use rusoto_s3::*;
+use rusoto_s3::PutObjectError;
 use snafu::{Backtrace, Snafu};
 use std::io;
 
@@ -25,29 +31,33 @@ pub enum Error {
         backtrace: Backtrace,
     },
     #[snafu(display("S3 operation timed out"))]
-    Timeout { source: tokio::time::error::Elapsed },
+    Timeout {
+        source: tokio::time::error::Elapsed,
+    },
     #[snafu(display("Error listing objects in S3: {:?}", source))]
     ListObjectsV2 {
-        source: RusotoError<ListObjectsV2Error>,
+        source: SdkError<ListObjectsV2Error>,
     },
     #[snafu(display("Error deleting objects in S3: {:?}", source))]
     DeleteObjects {
-        source: RusotoError<DeleteObjectsError>,
+        source: SdkError<DeleteObjectsError>,
     },
     DeleteObject {
-        source: RusotoError<DeleteObjectError>,
+        source: SdkError<DeleteObjectError>,
     },
     CopyObject {
-        source: RusotoError<CopyObjectError>,
+        source: SdkError<CopyObjectError>,
     },
     #[snafu(display("GetObject s3://{}/{}: {:#?}", bucket, key, source))]
     GetObject {
         key: String,
         bucket: String,
-        source: RusotoError<GetObjectError>,
+        source: SdkError<GetObjectError>,
     },
     #[snafu(display("IO error: {}", source))]
-    TokioIo { source: tokio::io::Error },
+    TokioIo {
+        source: tokio::io::Error,
+    },
     AnyError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
@@ -56,6 +66,36 @@ pub enum Error {
     MissingKeyOrSize,
     #[snafu(display("Downloading objects: missing content_length property"))]
     MissingContentLength,
+
+    // AWS SDK Errors
+    #[snafu(display("S3 'put object' error on key '{}': {}", key, source))]
+    NewPutObject {
+        source: SdkError<PutObjectError>,
+        key: String,
+        backtrace: Backtrace,
+    },
+
+    #[snafu(display("Error listing objects in S3: {:?}", source))]
+    NewListObjectsV2 {
+        source: SdkError<ListObjectsV2Error>,
+    },
+
+    #[snafu(display("Error deleting objects in S3: {:?}", source))]
+    NewDeleteObjects {
+        source: SdkError<DeleteObjectsError>,
+    },
+    NewDeleteObject {
+        source: SdkError<DeleteObjectError>,
+    },
+    NewCopyObject {
+        source: SdkError<CopyObjectError>,
+    },
+    #[snafu(display("GetObject s3://{}/{}: {:#?}", bucket, key, source))]
+    NewGetObject {
+        key: String,
+        bucket: String,
+        source: SdkError<GetObjectError>,
+    },
 }
 
 impl<T> From<RusotoError<T>> for Error
@@ -63,6 +103,25 @@ where
     T: std::error::Error + Send + Sync + 'static,
 {
     fn from(err: RusotoError<T>) -> Self {
+        Self::AnyError {
+            source: Box::new(err),
+        }
+    }
+}
+
+impl<T> From<SdkError<T>> for Error
+where
+    T: std::error::Error + Send + Sync + 'static,
+{
+    fn from(err: SdkError<T>) -> Self {
+        Self::AnyError {
+            source: Box::new(err),
+        }
+    }
+}
+
+impl From<aws_smithy_http::byte_stream::error::Error> for Error {
+    fn from(err: aws_smithy_http::byte_stream::error::Error) -> Self {
         Self::AnyError {
             source: Box::new(err),
         }

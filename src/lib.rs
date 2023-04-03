@@ -8,6 +8,10 @@
 //! and then execute deletion or copy on all the files.
 
 use crate::timeout::*;
+use aws_config::default_provider::credentials::DefaultCredentialsChain;
+use aws_config::meta::region::RegionProviderChain;
+use aws_sdk_s3::config::retry::RetryConfig;
+use aws_sdk_s3::Client;
 use futures::{
     future::{Future, TryFutureExt},
     prelude::*,
@@ -15,13 +19,10 @@ use futures::{
 };
 use futures_retry::{FutureRetry, RetryPolicy};
 use futures_stopwatch::try_stopwatch;
-use rusoto_core::ByteStream;
-use rusoto_s3::*;
 use snafu::futures::TryFutureExt as S;
 use snafu::ResultExt;
 use std::{marker::Unpin, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
-use tokio_util::codec::{BytesCodec, FramedRead};
 
 mod config;
 pub mod err;
@@ -40,18 +41,18 @@ mod mock;
 mod test;
 
 #[derive(Clone)]
-pub struct S3Algo<S = S3Client> {
-    s3: S,
+pub struct S3Algo {
+    s3: Client,
     config: Config,
 }
-impl<S> S3Algo<S> {
-    pub fn new(s3: S) -> Self {
+impl S3Algo {
+    pub fn new(s3: Client) -> Self {
         Self {
             s3,
             config: Config::default(),
         }
     }
-    pub fn with_config(s3: S, config: Config) -> Self {
+    pub fn with_config(s3: Client, config: Config) -> Self {
         Self { s3, config }
     }
 }
@@ -204,18 +205,40 @@ where
     .map_err(|(err, _attempts)| err)
 }
 
-/// S3 client for testing - assumes local minio on port 9000 and an existing credentials profile
-/// called `testing`
-pub fn testing_s3_client() -> S3Client {
-    use rusoto_core::{credential::ProfileProvider, region::Region, HttpClient};
-    let client = HttpClient::new().unwrap();
-    let region = Region::Custom {
-        name: "minio".to_owned(),
-        endpoint: "http://localhost:9000".to_owned(),
-    };
+pub async fn retriable_s3_client() -> Client {
+    let retry_config = RetryConfig::standard()
+        .with_max_attempts(3)
+        .with_initial_backoff(Duration::from_secs(10));
 
-    let mut profile = ProfileProvider::new().unwrap();
-    profile.set_profile("testing");
+    let region_provider = RegionProviderChain::default_provider();
+    let sdk_config = aws_config::from_env().region(region_provider).load().await;
 
-    rusoto_s3::S3Client::new_with(client, profile, region)
+    let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&sdk_config);
+    s3_config_builder.set_retry_config(Some(retry_config));
+
+    aws_sdk_s3::Client::from_conf(s3_config_builder.build())
+}
+
+pub async fn testing_sdk_client() -> Client {
+    let retry_config = RetryConfig::standard()
+        .with_max_attempts(3)
+        .with_initial_backoff(Duration::from_secs(10));
+
+    let credentials_provider = DefaultCredentialsChain::builder()
+        .profile_name("testing")
+        .build()
+        .await;
+    let region_provider = RegionProviderChain::first_try("EuWest1");
+    let sdk_config = aws_config::from_env()
+        .region(region_provider)
+        .endpoint_url("http://localhost:9000")
+        .credentials_provider(credentials_provider)
+        .load()
+        .await;
+
+    let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&sdk_config);
+    s3_config_builder.set_retry_config(Some(retry_config));
+    s3_config_builder.set_force_path_style(Some(true));
+
+    Client::from_conf(s3_config_builder.build())
 }

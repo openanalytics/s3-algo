@@ -1,6 +1,7 @@
 use super::*;
+use aws_sdk_s3::{client::fluent_builders::PutObject, types::ByteStream};
 
-impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
+impl S3Algo {
     /// Upload multiple files to S3.
     ///
     /// `upload_files` provides counting of uploaded files and bytes through the `progress` closure:
@@ -28,7 +29,7 @@ impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
         P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
         F: Future<Output = ()> + Send + 'static,
         I: Iterator<Item = ObjectSource> + Send + 'static,
-        R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send + 'static,
+        R: Fn(&Client) -> PutObject + Clone + Unpin + Sync + Send + 'static,
     {
         let copy_parallelization = self.config.copy_parallelization;
         let n_retries = self.config.algorithm.n_retries;
@@ -105,41 +106,39 @@ impl ObjectSource {
                 })?;
 
                 let len = metadata.len() as usize;
+                // let boxbody = BoxBody::new(
+                //     FramedRead::new(file, BytesCodec::new()).map_ok(bytes::BytesMut::freeze),
+                // );
+                // let sdk_body = SdkBody::from_dyn(boxbody);
 
-                Ok((
-                    ByteStream::new(
-                        FramedRead::new(file, BytesCodec::new()).map_ok(bytes::BytesMut::freeze),
-                    ),
-                    len,
-                ))
+                Ok((ByteStream::read_from().file(file).build().await?, len))
             }
             Self::Data { data, .. } => Ok((data.clone().into(), data.len())),
         }
     }
-    pub async fn create_upload_future<C, R>(
+    pub async fn create_upload_future<R>(
         self,
-        s3: C,
+        s3: aws_sdk_s3::Client,
         bucket: String,
         default: R,
     ) -> Result<(impl Future<Output = Result<(), Error>>, usize), Error>
     where
-        C: S3 + Clone,
-        R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
+        R: Fn(&Client) -> PutObject + Clone + Unpin + Sync + Send + 'static,
     {
         let (stream, len) = self.create_stream().await?;
         let key = self.get_key().to_owned();
         let (s3, bucket, default) = (s3.clone(), bucket.clone(), default.clone());
         let future = async move {
-            s3.put_object(PutObjectRequest {
-                bucket: bucket.clone(),
-                key: key.clone(),
-                body: Some(ByteStream::new(stream)),
-                content_length: Some(len as i64),
-                ..default()
-            })
-            .map_err(|e| e.into())
-            .await
-            .map(drop)
+            default(&s3)
+                .set_bucket(Some(bucket.clone()))
+                .set_key(Some(key.clone()))
+                .set_body(Some(stream))
+                .set_content_length(Some(len as i64))
+                .send()
+                .await
+                .map_err(|e| e.into())
+                // .await
+                .map(drop)
         };
         Ok((future, len))
     }

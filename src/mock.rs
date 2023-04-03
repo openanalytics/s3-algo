@@ -1,6 +1,7 @@
 use crate::*;
 use multi_default_trait_impl::{default_trait_impl, trait_impl};
 use rusoto_core::*;
+use rusoto_s3::*;
 use std::{pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
