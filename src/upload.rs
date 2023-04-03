@@ -1,6 +1,8 @@
 use super::*;
+use rusoto_core::ByteStream;
+use rusoto_s3::*;
 
-impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
+impl S3Algo {
     /// Upload multiple files to S3.
     ///
     /// `upload_files` provides counting of uploaded files and bytes through the `progress` closure:
@@ -40,7 +42,11 @@ impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
         let timeout_state2 = timeout_state.clone();
 
         let jobs = files.map(move |src| {
-            let (default, bucket, s3) = (default_request.clone(), bucket.clone(), self.s3.clone());
+            let (default, bucket, s3) = (
+                default_request.clone(),
+                bucket.clone(),
+                self.rusoto_s3.clone(),
+            );
             s3_request(
                 move || {
                     src.clone()

@@ -1,19 +1,18 @@
 use super::*;
+use aws_sdk_s3::model::Object;
+use aws_sdk_s3::types::ByteStream;
 use futures::future::{ok, ready};
 use futures::stream::Stream;
-use rusoto_core::ByteStream;
-use rusoto_s3::ListObjectsV2Output;
-use snafu::futures::TryFutureExt;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io;
 
-pub type ListObjectsV2Result = Result<(RequestReport, ListObjectsV2Output), err::Error>;
+pub type ObjectResult = Result<Object, err::Error>;
 
 /// A stream that can list objects, and (using member functions) delete or copy listed files.
-pub struct ListObjects<C, S> {
-    s3: C,
+pub struct ListObjects<S> {
+    s3: Client,
     config: Config,
     bucket: String,
     /// Common prefix (as requested) of the listed objects. Empty string if all objects were
@@ -21,12 +20,11 @@ pub struct ListObjects<C, S> {
     prefix: String,
     stream: S,
 }
-impl<C, S> ListObjects<C, S>
+impl<S> ListObjects<S>
 where
-    C: S3 + Clone + Send + Sync + Unpin + 'static,
-    S: Stream<Item = ListObjectsV2Result> + Sized + Send + 'static,
+    S: Stream<Item = ObjectResult> + Sized + Send + 'static,
 {
-    pub fn boxed(self) -> ListObjects<C, Pin<Box<dyn Stream<Item = ListObjectsV2Result> + Send>>> {
+    pub fn boxed(self) -> ListObjects<Pin<Box<dyn Stream<Item = ObjectResult> + Send>>> {
         ListObjects {
             s3: self.s3,
             config: self.config,
@@ -46,9 +44,6 @@ where
             stream, prefix: _, ..
         } = self;
         stream
-            .try_filter_map(|response| ok(response.1.contents))
-            .map_ok(|x| stream::iter(x).map(Ok))
-            .try_flatten()
             .try_for_each_concurrent(None, move |object| {
                 let f = f.clone();
                 async move {
@@ -60,91 +55,48 @@ where
     }
     /// Download all listed objects - returns a stream of the contents.
     /// Used as a basis for other `download_all_*` functions.
-    pub fn download_all_stream<R>(
+    pub fn download_all_stream(
         self,
-        default_request: R,
-    ) -> impl Stream<Item = Result<(String, ByteStream, i64), Error>>
-    where
-        R: Fn() -> GetObjectRequest + Clone + Unpin + Sync + Send + 'static,
-    {
+    ) -> impl Stream<Item = Result<(String, ByteStream, i64), Error>> {
         let ListObjects {
             s3,
-            config,
+            config: _,
             bucket,
             stream,
             prefix: _,
         } = self;
-        let timeout = Arc::new(Mutex::new(TimeoutState::new(
-            config.algorithm.clone(),
-            config.put_requests.clone(),
-        )));
-        let n_retries = config.algorithm.n_retries;
         stream
-            .try_filter_map(|response| ok(response.1.contents))
-            .map_ok(|x| stream::iter(x).map(Ok))
-            .try_flatten()
             .map(|result| {
                 result.and_then(|obj| {
                     let Object { key, size, .. } = obj;
-                    if let (Some(key), Some(size)) = (key, size) {
+                    if let Some(key) = key {
                         Ok((key, size))
                     } else {
                         Err(err::Error::MissingKeyOrSize)
                     }
                 })
             })
-            .and_then(move |(key, size)| {
-                let (s3, timeout) = (s3.clone(), timeout.clone());
-                let request = GetObjectRequest {
-                    bucket: bucket.clone(),
-                    key: key.clone(),
-                    ..default_request()
-                };
-                s3_request(
-                    move || {
-                        let (s3, request) = (s3.clone(), request.clone());
-                        async move {
-                            let (s3, request) = (s3.clone(), request.clone());
-                            Ok((
-                                async move {
-                                    s3.get_object(request.clone())
-                                        .with_context(|| err::GetObject {
-                                            key: request.key.clone(),
-                                            bucket: request.bucket.clone(),
-                                        })
-                                        .await
-                                },
-                                size as usize,
-                            ))
-                        }
-                    },
-                    |_, size| size,
-                    n_retries,
-                    timeout,
-                )
-                // Include key in the Item, and turn Option around the entire Item
-                .map(|result| {
-                    result.and_then(|response| {
-                        if let (Some(body), Some(content_length)) =
-                            (response.1.body, response.1.content_length)
-                        {
-                            Ok((key, body, content_length))
-                        } else {
-                            Err(err::Error::MissingContentLength)
-                        }
-                    })
-                })
+            .and_then(move |(key, _)| {
+                let (s3, bucket) = (s3.clone(), bucket.clone());
+
+                async move {
+                    let output = s3
+                        .get_object()
+                        .bucket(bucket.clone())
+                        .key(key.clone())
+                        .send()
+                        .await
+                        .context(err::GetObject {
+                            key: key.clone(),
+                            bucket,
+                        })?;
+                    Ok((key, output.body, output.content_length))
+                }
             })
     }
 
-    pub fn download_all_to_vec<R>(
-        self,
-        default_request: R,
-    ) -> impl Stream<Item = Result<(String, Vec<u8>), Error>>
-    where
-        R: Fn() -> GetObjectRequest + Clone + Unpin + Sync + Send + 'static,
-    {
-        self.download_all_stream(default_request)
+    pub fn download_all_to_vec(self) -> impl Stream<Item = Result<(String, Vec<u8>), Error>> {
+        self.download_all_stream()
             .and_then(|(key, body, _)| async move {
                 let mut contents = vec![];
                 io::copy(&mut body.into_async_read(), &mut contents)
@@ -162,21 +114,16 @@ where
         ok(unimplemented!())
     }
     */
+
     /// Delete all listed objects.
     /// ## The `progress` closure
     /// The second (bool) argument says whether it's about a List or Delete request:
     ///  - false: ListObjectsV2 request
     ///  - true: DeleteObjects request
-    pub fn delete_all<P1, P2, F1, F2>(
-        self,
-        list_progress: P1,
-        delete_progress: P2,
-    ) -> impl Future<Output = Result<(), Error>>
+    pub fn delete_all<P, F>(self, delete_progress: P) -> impl Future<Output = Result<(), Error>>
     where
-        P1: Fn(RequestReport) -> F1 + Clone + Send + Sync + 'static,
-        P2: Fn(RequestReport) -> F2 + Clone + Send + Sync + 'static,
-        F1: Future<Output = ()> + Send + 'static,
-        F2: Future<Output = ()> + Send + 'static,
+        P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + 'static,
     {
         // For each ListObjectsV2Output, send a request to delete all the listed objects
         let ListObjects {
@@ -191,75 +138,60 @@ where
             config.delete_requests.clone(),
         )));
         let n_retries = config.algorithm.n_retries;
-        stream
-            .filter_map(|result| {
-                ready(
-                    result
-                        .map(|(report, response)| response.contents.map(|r| (report, r)))
-                        .transpose(),
-                )
-            })
-            .and_then(move |(report, contents)| {
-                // Report progress in listing objects
-                let list_progress = list_progress.clone();
-                async move {
-                    list_progress(report).await;
-                    Ok(contents)
-                }
-            })
-            .try_for_each_concurrent(None, move |contents| {
-                let (s3, bucket, timeout, del_progress) = (
-                    s3.clone(),
-                    bucket.clone(),
-                    timeout.clone(),
-                    delete_progress.clone(),
-                );
-                let objects = contents
-                    .iter()
-                    .filter_map(|obj| {
-                        obj.key.as_ref().map(|key| ObjectIdentifier {
-                            key: key.clone(),
-                            version_id: None,
-                        })
+        stream.try_for_each_concurrent(None, move |object| {
+            let (s3, bucket, timeout, del_progress) = (
+                s3.clone(),
+                bucket.clone(),
+                timeout.clone(),
+                delete_progress.clone(),
+            );
+            let objects = contents
+                .iter()
+                .filter_map(|obj| {
+                    obj.key.as_ref().map(|key| ObjectIdentifier {
+                        key: key.clone(),
+                        version_id: None,
                     })
-                    .collect::<Vec<_>>();
-                let n_objects = objects.len();
-                async move {
-                    let (report, _) = s3_request(
-                        move || {
+                })
+                .collect::<Vec<_>>();
+            let n_objects = objects.len();
+            async move {
+                let (report, _) = s3_request(
+                    move || {
+                        let (s3, bucket, objects) = (s3.clone(), bucket.clone(), objects.clone());
+                        async move {
                             let (s3, bucket, objects) =
                                 (s3.clone(), bucket.clone(), objects.clone());
-                            async move {
-                                let (s3, bucket, objects) =
-                                    (s3.clone(), bucket.clone(), objects.clone());
-                                Ok((
-                                    async move {
-                                        s3.delete_objects(DeleteObjectsRequest {
-                                            bucket,
-                                            delete: Delete {
-                                                objects,
-                                                quiet: None,
-                                            },
-                                            ..Default::default()
-                                        })
-                                        .map_err(|e| e.into())
-                                        .await
-                                    },
-                                    n_objects,
-                                ))
-                            }
-                        },
-                        |_, size| size,
-                        n_retries,
-                        timeout.clone(),
-                    )
-                    .await?;
-                    timeout.lock().await.update(&report);
-                    del_progress(report).await;
-                    Ok(())
-                }
-            })
+                            Ok((
+                                async move {
+                                    s3.delete_objects(DeleteObjectsRequest {
+                                        bucket,
+                                        delete: Delete {
+                                            objects,
+                                            quiet: None,
+                                        },
+                                        ..Default::default()
+                                    })
+                                    .map_err(|e| e.into())
+                                    .await
+                                },
+                                n_objects,
+                            ))
+                        }
+                    },
+                    |_, size| size,
+                    n_retries,
+                    timeout.clone(),
+                )
+                .await?;
+                timeout.lock().await.update(&report);
+                del_progress(report).await;
+                Ok(())
+            }
+        })
     }
+
+    /*
     /// Flatten into a stream of Objects.
     pub fn flatten(self) -> impl Stream<Item = Result<Object, Error>> {
         self.stream
@@ -414,105 +346,45 @@ where
         self.move_all(dest_bucket, substitute_prefix, default_request)
             .boxed()
     }
+    */
 }
 
-impl<C, S> Stream for ListObjects<C, S>
+impl<S> Stream for ListObjects<S>
 where
-    S: Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send + Unpin,
-    C: Unpin,
+    S: Stream<Item = ObjectResult> + Sized + Send + Unpin,
 {
-    type Item = Result<ListObjectsV2Output, Error>;
+    type Item = ObjectResult;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.stream).poll_next(cx)
     }
 }
 
-impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
-    /// List all objects with a certain prefix
+impl S3Algo {
+    /// List objects of a bucket.
     pub fn list_prefix(
         &self,
         bucket: String,
-        prefix: String,
-    ) -> ListObjects<S, impl Stream<Item = ListObjectsV2Result> + Sized + Send> {
-        let bucket1 = bucket.clone();
-        let prefix2 = prefix.clone();
-        let mut s = self.list_objects(bucket, move || ListObjectsV2Request {
-            bucket: bucket1.clone(),
-            prefix: Some(prefix2.clone()),
-            ..Default::default()
-        });
-        s.prefix = prefix;
-        s
-    }
-
-    /// List all objects given a request factory.
-    /// Paging is taken care of, so you need not fill in `continuation_token` in the
-    /// `ListObjectsV2Request`.
-    ///
-    /// `bucket` is only needed for eventual further operations on `ListObjects`.
-    pub fn list_objects<F>(
-        &self,
-        bucket: String,
-        request_factory: F,
-    ) -> ListObjects<S, impl Stream<Item = ListObjectsV2Result> + Sized + Send>
-    where
-        F: Fn() -> ListObjectsV2Request + Send + Sync + Clone + Unpin + 'static,
-    {
+        prefix: Option<String>,
+    ) -> ListObjects<impl Stream<Item = ObjectResult> + Sized + Send> {
         let n_retries = self.config.algorithm.n_retries;
         let timeout = Arc::new(Mutex::new(TimeoutState::new(
             self.config.algorithm.clone(),
             self.config.delete_requests.clone(),
         )));
-        let s3_1 = self.s3.clone();
-        let stream = futures::stream::unfold(
-            // Initial state = (next continuation token, first request)
-            (None, true),
-            // Transformation
-            //    - the stream will yield ListObjectsV2Output
-            //      and stop when there is nothing left to list
-            move |(cont, first)| {
-                let (s3, request_factory, timeout) =
-                    (s3_1.clone(), request_factory.clone(), timeout.clone());
-                async move {
-                    if let (&None, false) = (&cont, first) {
-                        None
-                    } else {
-                        let result = s3_request(
-                            move || {
-                                let (s3, request_factory, cont) =
-                                    (s3.clone(), request_factory.clone(), cont.clone());
-                                // clone
-                                async move {
-                                    let (s3, request_factory, cont) =
-                                        (s3.clone(), request_factory.clone(), cont.clone());
-                                    Ok((
-                                        async move {
-                                            s3.list_objects_v2(ListObjectsV2Request {
-                                                continuation_token: cont,
-                                                ..request_factory()
-                                            })
-                                            .context(err::ListObjectsV2)
-                                            .await
-                                        },
-                                        1000, // Number of objects: assume worst case
-                                    ))
-                                }
-                            },
-                            |output, _| output.contents.as_ref().map(Vec::len).unwrap_or(0),
-                            n_retries,
-                            timeout.clone(),
-                        )
-                        .await;
-                        let next_cont = if let Ok((_, ref response)) = result {
-                            response.next_continuation_token.clone()
-                        } else {
-                            None
-                        };
-                        Some((result, (next_cont, false)))
-                    }
-                }
-            },
-        );
+
+        let stream = self
+            .s3
+            .list_objects_v2()
+            .bucket(bucket.clone())
+            .set_prefix(prefix)
+            .into_paginator()
+            .send()
+            // Turn into a stream of Objects
+            .map_err(|source| err::Error::ListObjectsV2 { source })
+            .try_filter_map(|output| ok(output.contents))
+            .map_ok(|output| futures::stream::iter(output.into_iter().map(|x| Ok(x))))
+            .try_flatten();
+
         ListObjects {
             s3: self.s3.clone(),
             config: self.config.clone(),
@@ -527,14 +399,14 @@ impl<S: S3 + Clone + Send + Sync + Unpin + 'static> S3Algo<S> {
 mod test {
     use super::*;
     use crate::test::rand_string;
+    use rusoto_s3::PutObjectRequest;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     #[tokio::test]
     async fn test_s3_delete_files_progress() {
         // Minio does paging at 10'000 fles, so we need more than that.
         // It means this test will take a minutes or two.
-        let s3 = testing_s3_client();
-        let algo = S3Algo::new(s3);
+        let algo = S3Algo::new(testing_sdk_client().await, testing_rusoto_client());
         let dir = rand_string(14);
         let dir2 = dir.clone();
         const N_FILES: usize = 11_000;
@@ -562,7 +434,7 @@ mod test {
 
         // Do one listing only to check the exact file names
         let present = Arc::new(Mutex::new(std::collections::HashSet::new()));
-        algo.list_prefix("test-bucket".into(), dir.clone())
+        algo.list_prefix("test-bucket".into(), Some(dir.clone()))
             .process(|object| async {
                 let name = object.key.unwrap_or_else(|| "NONE".to_string());
                 println!("OBJ {}", name);
@@ -587,15 +459,14 @@ mod test {
 
         // Assert that number of files is N_FILES
         let count = algo
-            .list_prefix("test-bucket".into(), dir.clone())
-            .flatten()
+            .list_prefix("test-bucket".into(), Some(dir.clone()))
             .try_fold(0usize, |acc, _| ok(acc + 1))
             .await
             .unwrap();
         assert_eq!(count, N_FILES);
 
         // Delete all
-        algo.list_prefix("test-bucket".into(), dir.clone())
+        algo.list_prefix("test-bucket".into(), Some(dir.clone()))
             .delete_all(
                 move |list_rep| {
                     let n = list_rep.size as usize;

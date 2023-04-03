@@ -24,6 +24,9 @@ serde = {optional = true, version = "1.0.130", features = ["derive"]}
 snafu = {version = "0.6.1", features = ["futures"]}
 walkdir = "2.2.9"
 
+aws-sdk-s3 = "0.24.0"
+aws-config = "0.54.1"
+
 [dev-dependencies]
 tempdir = "0.3.7"
 multi-default-trait-impl = "0.1.2"
