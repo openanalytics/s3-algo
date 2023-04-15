@@ -1,5 +1,7 @@
 use super::*;
-use aws_sdk_s3::model::Object;
+use aws_sdk_s3::model::{Delete, Object, ObjectIdentifier};
+// use aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Output;
+use aws_sdk_s3::output::ListObjectsV2Output;
 use aws_sdk_s3::types::ByteStream;
 use futures::future::{ok, ready};
 use futures::stream::Stream;
@@ -8,7 +10,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io;
 
-pub type ObjectResult = Result<Object, err::Error>;
+pub type ListObjectsV2Result = Result<(RequestReport, ListObjectsV2Output), err::Error>;
 
 /// A stream that can list objects, and (using member functions) delete or copy listed files.
 pub struct ListObjects<S> {
@@ -22,9 +24,9 @@ pub struct ListObjects<S> {
 }
 impl<S> ListObjects<S>
 where
-    S: Stream<Item = ObjectResult> + Sized + Send + 'static,
+    S: Stream<Item = ListObjectsV2Result> + Sized + Send + 'static,
 {
-    pub fn boxed(self) -> ListObjects<Pin<Box<dyn Stream<Item = ObjectResult> + Send>>> {
+    pub fn boxed(self) -> ListObjects<Pin<Box<dyn Stream<Item = ListObjectsV2Result> + Send>>> {
         ListObjects {
             s3: self.s3,
             config: self.config,
@@ -44,6 +46,9 @@ where
             stream, prefix: _, ..
         } = self;
         stream
+            .try_filter_map(|response| ok(response.1.contents))
+            .map_ok(|x| stream::iter(x).map(Ok))
+            .try_flatten()
             .try_for_each_concurrent(None, move |object| {
                 let f = f.clone();
                 async move {
@@ -66,6 +71,9 @@ where
             prefix: _,
         } = self;
         stream
+            .try_filter_map(|response| ok(response.1.contents))
+            .map_ok(|x| stream::iter(x).map(Ok))
+            .try_flatten()
             .map(|result| {
                 result.and_then(|obj| {
                     let Object { key, size, .. } = obj;
@@ -145,12 +153,15 @@ where
                 timeout.clone(),
                 delete_progress.clone(),
             );
-            let objects = contents
-                .iter()
+            let objects = object
+                .1
+                .contents
                 .filter_map(|obj| {
-                    obj.key.as_ref().map(|key| ObjectIdentifier {
-                        key: key.clone(),
-                        version_id: None,
+                    obj.key.as_ref().map(|key| {
+                        ObjectIdentifier::builder()
+                            .set_key(key.clone())
+                            .set_version_id(None)
+                            .build()
                     })
                 })
                 .collect::<Vec<_>>();
@@ -164,16 +175,14 @@ where
                                 (s3.clone(), bucket.clone(), objects.clone());
                             Ok((
                                 async move {
-                                    s3.delete_objects(DeleteObjectsRequest {
-                                        bucket,
-                                        delete: Delete {
-                                            objects,
-                                            quiet: None,
-                                        },
-                                        ..Default::default()
-                                    })
-                                    .map_err(|e| e.into())
-                                    .await
+                                    s3.delete_objects()
+                                        .set_bucket(Some(bucket))
+                                        .set_delete(Some(
+                                            Delete::builder().set_objects(Some(objects)).build(),
+                                        ))
+                                        .send()
+                                        .await
+                                        .map_err(|e| e.into())
                                 },
                                 n_objects,
                             ))
@@ -351,9 +360,9 @@ where
 
 impl<S> Stream for ListObjects<S>
 where
-    S: Stream<Item = ObjectResult> + Sized + Send + Unpin,
+    S: Stream<Item = ListObjectsV2Result> + Sized + Send + Unpin,
 {
-    type Item = ObjectResult;
+    type Item = ListObjectsV2Result;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.stream).poll_next(cx)
     }
@@ -365,7 +374,7 @@ impl S3Algo {
         &self,
         bucket: String,
         prefix: Option<String>,
-    ) -> ListObjects<impl Stream<Item = ObjectResult> + Sized + Send> {
+    ) -> ListObjects<impl Stream<Item = Result<Object, Error>> + Sized + Send> {
         let n_retries = self.config.algorithm.n_retries;
         let timeout = Arc::new(Mutex::new(TimeoutState::new(
             self.config.algorithm.clone(),
@@ -380,10 +389,10 @@ impl S3Algo {
             .into_paginator()
             .send()
             // Turn into a stream of Objects
-            .map_err(|source| err::Error::ListObjectsV2 { source })
-            .try_filter_map(|output| ok(output.contents))
-            .map_ok(|output| futures::stream::iter(output.into_iter().map(|x| Ok(x))))
-            .try_flatten();
+            .map_err(|source| err::Error::ListObjectsV2 { source });
+        // .try_filter_map(|output| ok(output.contents));
+        // .map_ok(|output| futures::stream::iter(output.into_iter().map(|x| Ok(x))))
+        // .try_flatten();
 
         ListObjects {
             s3: self.s3.clone(),
