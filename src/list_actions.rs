@@ -156,10 +156,12 @@ where
             let objects = object
                 .1
                 .contents
+                .unwrap()
+                .iter()
                 .filter_map(|obj| {
                     obj.key.as_ref().map(|key| {
                         ObjectIdentifier::builder()
-                            .set_key(key.clone())
+                            .set_key(Some(key.clone()))
                             .set_version_id(None)
                             .build()
                     })
@@ -374,7 +376,9 @@ impl S3Algo {
         &self,
         bucket: String,
         prefix: Option<String>,
-    ) -> ListObjects<impl Stream<Item = Result<Object, Error>> + Sized + Send> {
+    ) -> ListObjects<
+        impl Stream<Item = Result<aws_sdk_s3::output::ListObjectsV2Output, Error>> + Sized + Send,
+    > {
         let n_retries = self.config.algorithm.n_retries;
         let timeout = Arc::new(Mutex::new(TimeoutState::new(
             self.config.algorithm.clone(),

@@ -96,7 +96,6 @@ pub enum Error {
         bucket: String,
         source: SdkError<GetObjectError>,
     },
-
 }
 
 impl<T> From<RusotoError<T>> for Error
