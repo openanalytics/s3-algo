@@ -1,5 +1,7 @@
 use super::*;
-use rusoto_core::ByteStream;
+use aws_sdk_s3::types::ByteStream;
+use aws_smithy_http::body::{BoxBody, SdkBody};
+// use rusoto_core::ByteStream;
 use rusoto_s3::*;
 
 impl S3Algo {
@@ -42,11 +44,7 @@ impl S3Algo {
         let timeout_state2 = timeout_state.clone();
 
         let jobs = files.map(move |src| {
-            let (default, bucket, s3) = (
-                default_request.clone(),
-                bucket.clone(),
-                self.rusoto_s3.clone(),
-            );
+            let (default, bucket, s3) = (default_request.clone(), bucket.clone(), self.s3.clone());
             s3_request(
                 move || {
                     src.clone()
@@ -111,41 +109,39 @@ impl ObjectSource {
                 })?;
 
                 let len = metadata.len() as usize;
+                // let boxbody = BoxBody::new(
+                //     FramedRead::new(file, BytesCodec::new()).map_ok(bytes::BytesMut::freeze),
+                // );
+                // let sdk_body = SdkBody::from_dyn(boxbody);
 
-                Ok((
-                    ByteStream::new(
-                        FramedRead::new(file, BytesCodec::new()).map_ok(bytes::BytesMut::freeze),
-                    ),
-                    len,
-                ))
+                Ok((ByteStream::read_from().file(file).build().await?, len))
             }
             Self::Data { data, .. } => Ok((data.clone().into(), data.len())),
         }
     }
-    pub async fn create_upload_future<C, R>(
+    pub async fn create_upload_future<R>(
         self,
-        s3: C,
+        s3: aws_sdk_s3::Client,
         bucket: String,
         default: R,
     ) -> Result<(impl Future<Output = Result<(), Error>>, usize), Error>
     where
-        C: S3 + Clone,
         R: Fn() -> PutObjectRequest + Clone + Unpin + Sync + Send,
     {
         let (stream, len) = self.create_stream().await?;
         let key = self.get_key().to_owned();
         let (s3, bucket, default) = (s3.clone(), bucket.clone(), default.clone());
         let future = async move {
-            s3.put_object(PutObjectRequest {
-                bucket: bucket.clone(),
-                key: key.clone(),
-                body: Some(ByteStream::new(stream)),
-                content_length: Some(len as i64),
-                ..default()
-            })
-            .map_err(|e| e.into())
-            .await
-            .map(drop)
+            s3.put_object()
+                .set_bucket(Some(bucket.clone()))
+                .set_key(Some(key.clone()))
+                .set_body(Some(stream))
+                .set_content_length(Some(len as i64))
+                .send()
+                .await
+                .map_err(|e| e.into())
+                // .await
+                .map(drop)
         };
         Ok((future, len))
     }

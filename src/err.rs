@@ -120,6 +120,14 @@ where
     }
 }
 
+impl From<aws_smithy_http::byte_stream::error::Error> for Error {
+    fn from(err: aws_smithy_http::byte_stream::error::Error) -> Self {
+        Self::AnyError {
+            source: Box::new(err),
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

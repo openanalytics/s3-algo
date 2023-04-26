@@ -25,6 +25,7 @@ snafu = {version = "0.6.1", features = ["futures"]}
 walkdir = "2.2.9"
 aws-sdk-s3 = "0.24.0"
 aws-config = "0.54.1"
+aws-smithy-http = "0.54.1"
 
 [dev-dependencies]
 tempdir = "0.3.7"

@@ -43,23 +43,17 @@ mod test;
 #[derive(Clone)]
 pub struct S3Algo {
     s3: Client,
-    rusoto_s3: rusoto_s3::S3Client,
     config: Config,
 }
 impl S3Algo {
-    pub fn new(s3: Client, rusoto_s3: rusoto_s3::S3Client) -> Self {
+    pub fn new(s3: Client) -> Self {
         Self {
             s3,
-            rusoto_s3,
             config: Config::default(),
         }
     }
-    pub fn with_config(s3: Client, rusoto_s3: rusoto_s3::S3Client, config: Config) -> Self {
-        Self {
-            s3,
-            rusoto_s3,
-            config,
-        }
+    pub fn with_config(s3: Client, config: Config) -> Self {
+        Self { s3, config }
     }
 }
 
@@ -224,20 +218,7 @@ pub async fn retriable_s3_client() -> Client {
 
     aws_sdk_s3::Client::from_conf(s3_config_builder.build())
 }
-// Fn(RetryConfig) -> Client
-pub fn testing_rusoto_client() -> rusoto_s3::S3Client {
-    use rusoto_core::{credential::ProfileProvider, region::Region, HttpClient};
-    let client = HttpClient::new().unwrap();
-    let region = Region::Custom {
-        name: "minio".to_owned(),
-        endpoint: "http://localhost:9000".to_owned(),
-    };
 
-    let mut profile = ProfileProvider::new().unwrap();
-    profile.set_profile("testing");
-
-    rusoto_s3::S3Client::new_with(client, profile, region)
-}
 pub async fn testing_sdk_client() -> Client {
     let retry_config = RetryConfig::standard()
         .with_max_attempts(3)

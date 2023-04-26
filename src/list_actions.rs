@@ -362,6 +362,8 @@ where
 
 impl<S> Stream for ListObjects<S>
 where
+    // S: Stream<Item = ListObjectsV2Result> + Sized + Send + Unpin,
+    // S: Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send,
     S: Stream<Item = ListObjectsV2Result> + Sized + Send + Unpin,
 {
     type Item = ListObjectsV2Result;
@@ -378,6 +380,7 @@ impl S3Algo {
         prefix: Option<String>,
     ) -> ListObjects<
         impl Stream<Item = Result<aws_sdk_s3::output::ListObjectsV2Output, Error>> + Sized + Send,
+        // impl Stream<Item = Result<ListObjectsV2Output, Error> + Sized + Send + Unpin,>
     > {
         let n_retries = self.config.algorithm.n_retries;
         let timeout = Arc::new(Mutex::new(TimeoutState::new(
@@ -392,6 +395,7 @@ impl S3Algo {
             .set_prefix(prefix)
             .into_paginator()
             .send()
+            // .map_ok(|output| Ok(output.contents))
             // Turn into a stream of Objects
             .map_err(|source| err::Error::ListObjectsV2 { source });
         // .try_filter_map(|output| ok(output.contents));
