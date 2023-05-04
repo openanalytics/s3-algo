@@ -61,7 +61,7 @@ async fn benchmark_s3_upload(
         copy_parallelization,
         ..Default::default()
     };
-    let s3 = testing_s3_client();
+    let s3 = testing_sdk_client().await;
     let algo = S3Algo::with_config(s3, cfg);
 
     upload_perf_log_init(&mut std::io::stdout());

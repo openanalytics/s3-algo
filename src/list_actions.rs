@@ -200,15 +200,15 @@ where
         })
     }
 
-    /*
     /// Flatten into a stream of Objects.
     pub fn flatten(self) -> impl Stream<Item = Result<Object, Error>> {
         self.stream
-            .try_filter_map(|response| ok(response.1.contents))
+            .try_filter_map(|response| ok(response.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
             .try_flatten()
     }
 
+    /*
     /// This function exists to provide a stream to copy all objects, for both `copy_all` and
     /// `move_all`. The `String` that is the stream's `Item` is the _source key_. An `Ok` value
     /// thus signals (relevant when used in `move_all`) that a certain key is ready for deletion.
@@ -416,7 +416,7 @@ mod test {
     async fn test_s3_delete_files_progress() {
         // Minio does paging at 10'000 fles, so we need more than that.
         // It means this test will take a minutes or two.
-        let algo = S3Algo::new(testing_sdk_client().await, testing_rusoto_client());
+        let algo = S3Algo::new(testing_sdk_client().await);
         let dir = rand_string(14);
         let dir2 = dir.clone();
         const N_FILES: usize = 11_000;
@@ -477,24 +477,14 @@ mod test {
 
         // Delete all
         algo.list_prefix("test-bucket".into(), Some(dir.clone()))
-            .delete_all(
-                move |list_rep| {
-                    let n = list_rep.size as usize;
-                    println!("Listed {} items", n);
-                    let listed_files = listed_files2.clone();
-                    async move {
-                        listed_files.fetch_add(n, Ordering::Relaxed);
-                    }
-                },
-                move |del_rep| {
-                    let n = del_rep.size as usize;
-                    println!("Deleted {} items", n);
-                    let deleted_files = deleted_files2.clone();
-                    async move {
-                        deleted_files.fetch_add(n, Ordering::Relaxed);
-                    }
-                },
-            )
+            .delete_all(move |del_rep| {
+                let n = del_rep.size as usize;
+                println!("Deleted {} items", n);
+                let deleted_files = deleted_files2.clone();
+                async move {
+                    deleted_files.fetch_add(n, Ordering::Relaxed);
+                }
+            })
             .await
             .unwrap();
 
@@ -504,7 +494,7 @@ mod test {
 
         // Assert that number of files is 0
         let count = algo
-            .list_prefix("test-bucket".into(), dir)
+            .list_prefix("test-bucket".into(), Some(dir))
             .flatten()
             .try_fold(0usize, |acc, _| ok(acc + 1))
             .await
