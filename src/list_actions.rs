@@ -1,6 +1,5 @@
 use super::*;
 use aws_sdk_s3::model::{Delete, Object, ObjectIdentifier};
-// use aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Output;
 use aws_sdk_s3::output::ListObjectsV2Output;
 use aws_sdk_s3::types::ByteStream;
 use futures::future::{ok, ready};
@@ -9,8 +8,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io;
-
-pub type ListObjectsV2Result = Result<(RequestReport, ListObjectsV2Output), err::Error>;
 
 /// A stream that can list objects, and (using member functions) delete or copy listed files.
 pub struct ListObjects<S> {
@@ -24,9 +21,11 @@ pub struct ListObjects<S> {
 }
 impl<S> ListObjects<S>
 where
-    S: Stream<Item = ListObjectsV2Result> + Sized + Send + 'static,
+    S: Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send + 'static,
 {
-    pub fn boxed(self) -> ListObjects<Pin<Box<dyn Stream<Item = ListObjectsV2Result> + Send>>> {
+    pub fn boxed(
+        self,
+    ) -> ListObjects<Pin<Box<dyn Stream<Item = Result<ListObjectsV2Output, Error>> + Send>>> {
         ListObjects {
             s3: self.s3,
             config: self.config,
@@ -46,7 +45,7 @@ where
             stream, prefix: _, ..
         } = self;
         stream
-            .try_filter_map(|response| ok(response.1.contents))
+            .try_filter_map(|response| ok(response.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
             .try_flatten()
             .try_for_each_concurrent(None, move |object| {
@@ -71,7 +70,7 @@ where
             prefix: _,
         } = self;
         stream
-            .try_filter_map(|response| ok(response.1.contents))
+            .try_filter_map(|response| ok(response.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
             .try_flatten()
             .map(|result| {
@@ -80,7 +79,7 @@ where
                     if let Some(key) = key {
                         Ok((key, size))
                     } else {
-                        Err(err::Error::MissingKeyOrSize)
+                        Err(Error::MissingKeyOrSize)
                     }
                 })
             })
@@ -154,7 +153,6 @@ where
                 delete_progress.clone(),
             );
             let objects = object
-                .1
                 .contents
                 .unwrap()
                 .iter()
@@ -362,11 +360,9 @@ where
 
 impl<S> Stream for ListObjects<S>
 where
-    // S: Stream<Item = ListObjectsV2Result> + Sized + Send + Unpin,
-    // S: Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send,
-    S: Stream<Item = ListObjectsV2Result> + Sized + Send + Unpin,
+    S: Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send + Unpin,
 {
-    type Item = ListObjectsV2Result;
+    type Item = Result<ListObjectsV2Output, Error>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.stream).poll_next(cx)
     }
@@ -378,10 +374,7 @@ impl S3Algo {
         &self,
         bucket: String,
         prefix: Option<String>,
-    ) -> ListObjects<
-        impl Stream<Item = Result<aws_sdk_s3::output::ListObjectsV2Output, Error>> + Sized + Send,
-        // impl Stream<Item = Result<ListObjectsV2Output, Error> + Sized + Send + Unpin,>
-    > {
+    ) -> ListObjects<impl Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send> {
         let n_retries = self.config.algorithm.n_retries;
         let timeout = Arc::new(Mutex::new(TimeoutState::new(
             self.config.algorithm.clone(),
@@ -397,7 +390,7 @@ impl S3Algo {
             .send()
             // .map_ok(|output| Ok(output.contents))
             // Turn into a stream of Objects
-            .map_err(|source| err::Error::ListObjectsV2 { source });
+            .map_err(|source| Error::ListObjectsV2 { source });
         // .try_filter_map(|output| ok(output.contents));
         // .map_ok(|output| futures::stream::iter(output.into_iter().map(|x| Ok(x))))
         // .try_flatten();
