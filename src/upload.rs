@@ -132,7 +132,7 @@ impl ObjectSource {
         let key = self.get_key().to_owned();
         let (s3, bucket, default) = (s3.clone(), bucket.clone(), default.clone());
         let future = async move {
-            s3.put_object()
+            default()
                 .set_bucket(Some(bucket.clone()))
                 .set_key(Some(key.clone()))
                 .set_body(Some(stream))
