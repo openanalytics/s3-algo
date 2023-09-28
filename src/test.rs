@@ -1,11 +1,7 @@
-use crate::{mock::*, *};
+use crate::*;
 use rand::Rng;
-use rusoto_s3::*;
-use std::{
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::path::Path;
+use std::sync::Arc;
 use tempdir::TempDir;
 use timeout::TimeoutState;
 use tokio::io::AsyncReadExt;

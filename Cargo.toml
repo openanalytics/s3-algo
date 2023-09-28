@@ -1,12 +1,12 @@
 [package]
 name = "s3-algo"
 description = "High-performance algorithms for batch operations to Amazon S3"
-version = "0.5.5"
+version = "0.6.0"
 authors = ["Erlend Langseth <3rlendhl@gmail.com>"]
 license = "MIT"
 edition = "2018"
 
-documentation = "https://docs.rs/s3-algo/0.1.9/s3_algo/"
+documentation = "https://docs.rs/s3-algo/"
 repository = "https://github.com/openanalytics/s3-algo"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -15,17 +15,15 @@ repository = "https://github.com/openanalytics/s3-algo"
 futures = "0.3.17"
 futures-stopwatch = "0.3.0"
 futures-retry = "0.6.0"
-rusoto_s3 = "0.48.0"
-rusoto_core = "0.48.0"
 tokio = {version = "1.10", features = ["time", "fs", "macros", "io-util", "sync", "rt-multi-thread"]}
 tokio-util = {version = "0.7.0", features = ["codec"]}
 bytes = "1.2.1"
 serde = {optional = true, version = "1.0.130", features = ["derive"]}
 snafu = {version = "0.6.1", features = ["futures"]}
 walkdir = "2.2.9"
-aws-sdk-s3 = "0.24.0"
-aws-config = "0.54.1"
-aws-smithy-http = "0.54.1"
+aws-sdk-s3 = "0.31.2"
+aws-config = "0.56.1"
+aws-smithy-http = "0.56.1"
 
 [dev-dependencies]
 tempdir = "0.3.7"

@@ -1,5 +1,6 @@
 use super::*;
-use aws_sdk_s3::{client::fluent_builders::PutObject, types::ByteStream};
+use aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder;
+use aws_sdk_s3::primitives::ByteStream;
 
 impl S3Algo {
     /// Upload multiple files to S3.
@@ -29,7 +30,7 @@ impl S3Algo {
         P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
         F: Future<Output = ()> + Send + 'static,
         I: Iterator<Item = ObjectSource> + Send + 'static,
-        R: Fn(&Client) -> PutObject + Clone + Unpin + Sync + Send + 'static,
+        R: Fn(&Client) -> PutObjectFluentBuilder + Clone + Unpin + Sync + Send + 'static,
     {
         let copy_parallelization = self.config.copy_parallelization;
         let n_retries = self.config.algorithm.n_retries;
@@ -123,7 +124,7 @@ impl ObjectSource {
         default: R,
     ) -> Result<(impl Future<Output = Result<(), Error>>, usize), Error>
     where
-        R: Fn(&Client) -> PutObject + Clone + Unpin + Sync + Send + 'static,
+        R: Fn(&Client) -> PutObjectFluentBuilder + Clone + Unpin + Sync + Send + 'static,
     {
         let (stream, len) = self.create_stream().await?;
         let key = self.get_key().to_owned();

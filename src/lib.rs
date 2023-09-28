@@ -12,16 +12,17 @@ use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::config::retry::RetryConfig;
 use aws_sdk_s3::Client;
-use futures::{
-    future::{Future, TryFutureExt},
-    prelude::*,
-    stream,
-};
+use futures::future::{Future, TryFutureExt};
+use futures::prelude::*;
+use futures::stream;
 use futures_retry::{FutureRetry, RetryPolicy};
 use futures_stopwatch::try_stopwatch;
 use snafu::futures::TryFutureExt as S;
 use snafu::ResultExt;
-use std::{marker::Unpin, path::PathBuf, sync::Arc, time::Duration};
+use std::marker::Unpin;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 mod config;
@@ -35,8 +36,6 @@ pub mod timeout;
 pub use config::*;
 pub use err::Error;
 
-#[cfg(test)]
-mod mock;
 #[cfg(test)]
 mod test;
 

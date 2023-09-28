@@ -1,11 +1,10 @@
-use aws_sdk_s3::{
-    error::{
-        CopyObjectError, DeleteObjectError, DeleteObjectsError, GetObjectError, ListObjectsV2Error,
-    },
-    types::SdkError,
-};
-use rusoto_core::RusotoError;
-use rusoto_s3::PutObjectError;
+use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::operation::copy_object::CopyObjectError;
+use aws_sdk_s3::operation::delete_object::DeleteObjectError;
+use aws_sdk_s3::operation::delete_objects::DeleteObjectsError;
+use aws_sdk_s3::operation::get_object::GetObjectError;
+use aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Error;
+use aws_sdk_s3::operation::put_object::PutObjectError;
 use snafu::{Backtrace, Snafu};
 use std::io;
 
@@ -22,12 +21,6 @@ pub enum Error {
     #[snafu(display("Tokio timer error: {}", source))]
     Delay {
         source: tokio::time::error::Error,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("S3 'put object' error on key '{}': {}", key, source))]
-    PutObject {
-        source: RusotoError<PutObjectError>,
-        key: String,
         backtrace: Backtrace,
     },
     #[snafu(display("S3 operation timed out"))]
@@ -69,7 +62,7 @@ pub enum Error {
 
     // AWS SDK Errors
     #[snafu(display("S3 'put object' error on key '{}': {}", key, source))]
-    NewPutObject {
+    PutObject {
         source: SdkError<PutObjectError>,
         key: String,
         backtrace: Backtrace,
@@ -96,17 +89,6 @@ pub enum Error {
         bucket: String,
         source: SdkError<GetObjectError>,
     },
-}
-
-impl<T> From<RusotoError<T>> for Error
-where
-    T: std::error::Error + Send + Sync + 'static,
-{
-    fn from(err: RusotoError<T>) -> Self {
-        Self::AnyError {
-            source: Box::new(err),
-        }
-    }
 }
 
 impl<T> From<SdkError<T>> for Error

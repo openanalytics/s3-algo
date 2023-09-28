@@ -1,7 +1,7 @@
 use super::*;
-use aws_sdk_s3::model::{Delete, Object, ObjectIdentifier};
-use aws_sdk_s3::output::ListObjectsV2Output;
-use aws_sdk_s3::types::ByteStream;
+use aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Output;
+use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::types::{Delete, Object, ObjectIdentifier};
 use futures::future::ok;
 use futures::stream::Stream;
 use std::future::Future;
@@ -415,9 +415,7 @@ impl S3Algo {
 mod test {
     use super::*;
     use crate::test::rand_string;
-    use rusoto_s3::PutObjectRequest;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     #[tokio::test]
     async fn test_s3_delete_files_progress() {
         // Minio does paging at 10'000 fles, so we need more than that.
