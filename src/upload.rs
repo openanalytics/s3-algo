@@ -1,8 +1,5 @@
 use super::*;
 use aws_sdk_s3::{client::fluent_builders::PutObject, types::ByteStream};
-use aws_smithy_http::body::{BoxBody, SdkBody};
-// use rusoto_core::ByteStream;
-use rusoto_s3::*;
 
 impl S3Algo {
     /// Upload multiple files to S3.
@@ -32,7 +29,7 @@ impl S3Algo {
         P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
         F: Future<Output = ()> + Send + 'static,
         I: Iterator<Item = ObjectSource> + Send + 'static,
-        R: Fn() -> PutObject + Clone + Unpin + Sync + Send + 'static,
+        R: Fn(&Client) -> PutObject + Clone + Unpin + Sync + Send + 'static,
     {
         let copy_parallelization = self.config.copy_parallelization;
         let n_retries = self.config.algorithm.n_retries;
@@ -126,13 +123,13 @@ impl ObjectSource {
         default: R,
     ) -> Result<(impl Future<Output = Result<(), Error>>, usize), Error>
     where
-        R: Fn() -> PutObject + Clone + Unpin + Sync + Send + 'static,
+        R: Fn(&Client) -> PutObject + Clone + Unpin + Sync + Send + 'static,
     {
         let (stream, len) = self.create_stream().await?;
         let key = self.get_key().to_owned();
         let (s3, bucket, default) = (s3.clone(), bucket.clone(), default.clone());
         let future = async move {
-            default()
+            default(&s3)
                 .set_bucket(Some(bucket.clone()))
                 .set_key(Some(key.clone()))
                 .set_body(Some(stream))

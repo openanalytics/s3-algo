@@ -132,7 +132,7 @@ async fn upload_test_files(s3: S3Algo, parent: &Path, n_files: usize) -> Result<
         "test-bucket".into(),
         files_recursive(dir.clone(), dir.strip_prefix(parent).unwrap().to_owned()),
         |_| async move {},
-        PutObjectRequest::default,
+        |client| client.put_object(),
     )
     .await?;
     Ok(dir_key)

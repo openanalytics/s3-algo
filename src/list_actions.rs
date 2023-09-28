@@ -2,7 +2,7 @@ use super::*;
 use aws_sdk_s3::model::{Delete, Object, ObjectIdentifier};
 use aws_sdk_s3::output::ListObjectsV2Output;
 use aws_sdk_s3::types::ByteStream;
-use futures::future::{ok, ready};
+use futures::future::ok;
 use futures::stream::Stream;
 use std::future::Future;
 use std::pin::Pin;
@@ -123,14 +123,25 @@ where
     */
 
     /// Delete all listed objects.
-    /// ## The `progress` closure
-    /// The second (bool) argument says whether it's about a List or Delete request:
-    ///  - false: ListObjectsV2 request
-    ///  - true: DeleteObjects request
-    pub fn delete_all<P, F>(self, delete_progress: P) -> impl Future<Output = Result<(), Error>>
+    ///
+    /// With the two arguments, you can implement a detailed real-time progress report of both how
+    /// many files have been listed, and how many files have been deleted.
+    ///
+    /// `list_progress`: Closure that is given number of files listed as argument. Is called
+    /// several times, one for each batch of files listed.
+    /// `delete_progress`: Closure that is given RequestReport of a delete request. The `size`
+    /// field refers to the number of fields deleted.
+    ///
+    pub fn delete_all<P1, P2, F1, F2>(
+        self,
+        list_progress: P1,
+        delete_progress: P2,
+    ) -> impl Future<Output = Result<(), Error>>
     where
-        P: Fn(RequestReport) -> F + Clone + Send + Sync + 'static,
-        F: Future<Output = ()> + Send + 'static,
+        P1: Fn(usize) -> F1 + Clone + Send + Sync + 'static,
+        P2: Fn(RequestReport) -> F2 + Clone + Send + Sync + 'static,
+        F1: Future<Output = ()> + Send + 'static,
+        F2: Future<Output = ()> + Send + 'static,
     {
         // For each ListObjectsV2Output, send a request to delete all the listed objects
         let ListObjects {
@@ -146,11 +157,12 @@ where
         )));
         let n_retries = config.algorithm.n_retries;
         stream.try_for_each_concurrent(None, move |object| {
-            let (s3, bucket, timeout, del_progress) = (
+            let (s3, bucket, timeout, delete_progress2, list_progress2) = (
                 s3.clone(),
                 bucket.clone(),
                 timeout.clone(),
                 delete_progress.clone(),
+                list_progress.clone(),
             );
             let objects = object
                 .contents
@@ -166,7 +178,9 @@ where
                 })
                 .collect::<Vec<_>>();
             let n_objects = objects.len();
+
             async move {
+                list_progress2(n_objects).await;
                 let (report, _) = s3_request(
                     move || {
                         let (s3, bucket, objects) = (s3.clone(), bucket.clone(), objects.clone());
@@ -194,7 +208,7 @@ where
                 )
                 .await?;
                 timeout.lock().await.update(&report);
-                del_progress(report).await;
+                delete_progress2(report).await;
                 Ok(())
             }
         })
@@ -375,11 +389,7 @@ impl S3Algo {
         bucket: String,
         prefix: Option<String>,
     ) -> ListObjects<impl Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send> {
-        let n_retries = self.config.algorithm.n_retries;
-        let timeout = Arc::new(Mutex::new(TimeoutState::new(
-            self.config.algorithm.clone(),
-            self.config.delete_requests.clone(),
-        )));
+        // TODO: Reintroduce retry and timeout
 
         let stream = self
             .s3
@@ -388,12 +398,8 @@ impl S3Algo {
             .set_prefix(prefix)
             .into_paginator()
             .send()
-            // .map_ok(|output| Ok(output.contents))
             // Turn into a stream of Objects
             .map_err(|source| Error::ListObjectsV2 { source });
-        // .try_filter_map(|output| ok(output.contents));
-        // .map_ok(|output| futures::stream::iter(output.into_iter().map(|x| Ok(x))))
-        // .try_flatten();
 
         ListObjects {
             s3: self.s3.clone(),
@@ -432,7 +438,7 @@ mod test {
                     println!("{} files uploaded", result.seq);
                 }
             },
-            PutObjectRequest::default,
+            |client| client.put_object(),
         )
         .await
         .unwrap();
@@ -470,6 +476,7 @@ mod test {
         // Assert that number of files is N_FILES
         let count = algo
             .list_prefix("test-bucket".into(), Some(dir.clone()))
+            .flatten()
             .try_fold(0usize, |acc, _| ok(acc + 1))
             .await
             .unwrap();
@@ -477,14 +484,23 @@ mod test {
 
         // Delete all
         algo.list_prefix("test-bucket".into(), Some(dir.clone()))
-            .delete_all(move |del_rep| {
-                let n = del_rep.size as usize;
-                println!("Deleted {} items", n);
-                let deleted_files = deleted_files2.clone();
-                async move {
-                    deleted_files.fetch_add(n, Ordering::Relaxed);
-                }
-            })
+            .delete_all(
+                move |n| {
+                    println!("Listed {} items", n);
+                    let listed_files = listed_files2.clone();
+                    async move {
+                        listed_files.fetch_add(n, Ordering::Relaxed);
+                    }
+                },
+                move |del_rep| {
+                    let n = del_rep.size as usize;
+                    println!("Deleted {} items", n);
+                    let deleted_files = deleted_files2.clone();
+                    async move {
+                        deleted_files.fetch_add(n, Ordering::Relaxed);
+                    }
+                },
+            )
             .await
             .unwrap();
 

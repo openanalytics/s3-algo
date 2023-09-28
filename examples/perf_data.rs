@@ -71,7 +71,7 @@ async fn benchmark_s3_upload(
         bucket,
         files_recursive(dir_path, PathBuf::from(&prefix)),
         progress,
-        Default::default,
+        |client| client.put_object(),
     )
     .await
     .unwrap();

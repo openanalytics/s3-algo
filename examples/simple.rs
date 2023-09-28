@@ -10,7 +10,7 @@ async fn main() {
         "test-bucket".into(),
         files,
         |result| async move { println!("File {}/{} successfully uploaded", result.seq + 1, N_FILES)},
-        Default::default,
+        |client| client.put_object()
     )
     .await
     .unwrap();
