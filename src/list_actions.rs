@@ -166,7 +166,7 @@ where
             );
             let objects = object
                 .contents
-                .unwrap()
+                .unwrap_or_default() // unwrap or empty Vec
                 .iter()
                 .filter_map(|obj| {
                     obj.key.as_ref().map(|key| {
