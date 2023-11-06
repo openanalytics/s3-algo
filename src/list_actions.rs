@@ -174,6 +174,15 @@ where
                             .set_key(Some(key.clone()))
                             .set_version_id(None)
                             .build()
+                            .unwrap()
+                        // Unwrap:
+                        // - the error type is not Clone, so we have to allocate a new Vec<T> if we
+                        // want to deal with errors here
+                        // - It should be pretty safe to say that it will never panic because they
+                        // keys are retrieved from S3 and should thus not be invalid (the error
+                        // here is BuildError:
+                        //  > These are almost always due to user error caused by limitations of
+                        //  > specific fields due to protocol serialization
                     })
                 })
                 .collect::<Vec<_>>();
@@ -192,7 +201,10 @@ where
                                     s3.delete_objects()
                                         .set_bucket(Some(bucket))
                                         .set_delete(Some(
-                                            Delete::builder().set_objects(Some(objects)).build(),
+                                            Delete::builder()
+                                                .set_objects(Some(objects))
+                                                .build()
+                                                .unwrap(),
                                         ))
                                         .send()
                                         .await
