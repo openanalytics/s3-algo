@@ -5,6 +5,7 @@ use aws_sdk_s3::operation::delete_objects::DeleteObjectsError;
 use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Error;
 use aws_sdk_s3::operation::put_object::PutObjectError;
+use aws_sdk_s3::primitives::ByteStreamError;
 use snafu::{Backtrace, Snafu};
 use std::io;
 
@@ -102,8 +103,8 @@ where
     }
 }
 
-impl From<aws_smithy_http::byte_stream::error::Error> for Error {
-    fn from(err: aws_smithy_http::byte_stream::error::Error) -> Self {
+impl From<ByteStreamError> for Error {
+    fn from(err: ByteStreamError) -> Self {
         Self::AnyError {
             source: Box::new(err),
         }

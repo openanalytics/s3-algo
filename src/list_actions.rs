@@ -2,6 +2,7 @@ use super::*;
 use aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Output;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{Delete, Object, ObjectIdentifier};
+use aws_smithy_types_convert::stream::PaginationStreamExt;
 use futures::future::ok;
 use futures::stream::Stream;
 use std::future::Future;
@@ -61,7 +62,7 @@ where
     /// Used as a basis for other `download_all_*` functions.
     pub fn download_all_stream(
         self,
-    ) -> impl Stream<Item = Result<(String, ByteStream, i64), Error>> {
+    ) -> impl Stream<Item = Result<(String, ByteStream, Option<i64>), Error>> {
         let ListObjects {
             s3,
             config: _,
@@ -174,6 +175,8 @@ where
                             .set_key(Some(key.clone()))
                             .set_version_id(None)
                             .build()
+                            .unwrap() // unwrap: shouldn't fail building as the key comes directly
+                                      // from S3
                     })
                 })
                 .collect::<Vec<_>>();
@@ -192,7 +195,11 @@ where
                                     s3.delete_objects()
                                         .set_bucket(Some(bucket))
                                         .set_delete(Some(
-                                            Delete::builder().set_objects(Some(objects)).build(),
+                                            Delete::builder()
+                                                .set_objects(Some(objects))
+                                                .build()
+                                                .unwrap(), // unwrap: shouldn't fail building
+                                                           // because all the input comes directly from S3
                                         ))
                                         .send()
                                         .await
@@ -397,7 +404,8 @@ impl S3Algo {
             .bucket(bucket.clone())
             .set_prefix(prefix)
             .into_paginator()
-            .send()
+            .send();
+        let stream = PaginationStreamExt::into_stream_03x(stream)
             // Turn into a stream of Objects
             .map_err(|source| Error::ListObjectsV2 { source });
 
