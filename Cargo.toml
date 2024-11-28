@@ -28,6 +28,10 @@ aws-smithy-http = "0.60.4"
 aws-smithy-async = "1.1.4"
 aws-smithy-types-convert = {version = "0.60.4", features = ["convert-streams"]}
 
+[target.'cfg(windows)'.dependencies]
+# only needed on windows for substituting \ with / in paths
+path-slash = "0.2.1"
+
 [dev-dependencies]
 tempdir = "0.3.7"
 multi-default-trait-impl = "0.1.2"

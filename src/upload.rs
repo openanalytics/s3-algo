@@ -159,6 +159,8 @@ pub fn files_recursive(
     src_dir: PathBuf,
     key_prefix: PathBuf,
 ) -> impl Iterator<Item = ObjectSource> {
+    #[cfg(windows)]
+    use path_slash::PathExt;
     walkdir::WalkDir::new(&src_dir)
         .into_iter()
         .filter_map(move |entry| {
@@ -171,7 +173,10 @@ pub fn files_recursive(
                     let key = key_prefix.join(&key_suffix);
                     Some(ObjectSource::File {
                         path,
+                        #[cfg(unix)]
                         key: key.to_string_lossy().to_string(),
+                        #[cfg(windows)]
+                        key: key.to_slash_lossy().to_string(),
                     })
                 } else {
                     None
