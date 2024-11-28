@@ -1,9 +1,7 @@
 use clap::*;
 use s3_algo::*;
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[tokio::main]
 async fn main() {

@@ -211,7 +211,7 @@ pub async fn retriable_s3_client() -> Client {
         .with_initial_backoff(Duration::from_secs(10));
 
     let region_provider = RegionProviderChain::default_provider();
-    let sdk_config = aws_config::defaults(BehaviorVersion::v2023_11_09())
+    let sdk_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
         .region(region_provider)
         .load()
         .await;
@@ -232,7 +232,7 @@ pub async fn testing_sdk_client() -> Client {
         .build()
         .await;
     let region_provider = RegionProviderChain::first_try("EuWest1");
-    let sdk_config = aws_config::defaults(BehaviorVersion::v2023_11_09())
+    let sdk_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
         .region(region_provider)
         .endpoint_url("http://localhost:9000")
         .credentials_provider(credentials_provider)
