@@ -1,7 +1,7 @@
 [package]
 name = "s3-algo"
 description = "High-performance algorithms for batch operations to Amazon S3"
-version = "0.7.1"
+version = "0.7.2"
 authors = ["Erlend Langseth <3rlendhl@gmail.com>"]
 license = "MIT"
 edition = "2018"
@@ -12,11 +12,11 @@ repository = "https://github.com/openanalytics/s3-algo"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-futures = "0.3.17"
+futures = "0.3.31"
 futures-stopwatch = "0.3.0"
 futures-retry = "0.6.0"
-tokio = {version = "1.10", features = ["time", "fs", "macros", "io-util", "sync", "rt-multi-thread"]}
-tokio-util = {version = "0.7.0", features = ["codec"]}
+tokio = {version = "1.49", features = ["time", "fs", "macros", "io-util", "sync", "rt-multi-thread"]}
+tokio-util = {version = "0.7.18", features = ["codec"]}
 bytes = "1.2.1"
 serde = {optional = true, version = "1.0.130", features = ["derive"]}
 snafu = {version = "0.6.1", features = ["futures"]}
@@ -36,7 +36,7 @@ path-slash = "0.2.1"
 tempdir = "0.3.7"
 multi-default-trait-impl = "0.1.2"
 rand = "0.8.5"
-clap = "3.0.0"
+clap = "4.5"
 
 [features]
 default = ["serde1"]

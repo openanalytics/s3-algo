@@ -1,52 +1,55 @@
-use clap::*;
+use clap::{Arg, Command};
 use s3_algo::*;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[tokio::main]
 async fn main() {
-    let mut app = App::new("Example 'perf_data'")
-        .before_help("Upload a directory to S3 on localhost.")
+    let matches = Command::new("perf_data")
+        .about("Upload a directory to S3 on localhost.")
         .arg(
-            Arg::with_name("source")
+            Arg::new("source")
                 .help("Path to a folder to upload to S3")
-                .required(true),
+                .required(true)
+                .index(1),
         )
         .arg(
-            Arg::with_name("dest_bucket")
+            Arg::new("dest_bucket")
                 .help("Destination bucket")
-                .required(true),
+                .required(true)
+                .index(2),
         )
         .arg(
-            Arg::with_name("dest_prefix")
+            Arg::new("dest_prefix")
                 .help("Destination prefix")
-                .required(true),
+                .required(true)
+                .index(3),
         )
         .arg(
-            Arg::with_name("parallelization")
+            Arg::new("parallelization")
                 .short('n')
-                .takes_value(true)
+                .long("parallelization")
+                .value_name("N")
                 .help("Maximum number of simultaneous upload requests"),
-        );
-    let matches = app.clone().get_matches();
-
-    if let (Some(path), Some(bucket), Some(prefix)) = (
-        matches.value_of("source"),
-        matches.value_of("dest_bucket"),
-        matches.value_of("dest_prefix"),
-    ) {
-        let parallelization = value_t_or_exit!(matches.value_of("parallelization"), usize);
-        benchmark_s3_upload(
-            Path::new(path).to_path_buf(),
-            bucket.to_owned(),
-            prefix.to_owned(),
-            parallelization,
         )
-        .await;
-        println!("Done");
-    } else {
-        app.print_help().unwrap()
-    }
+        .get_matches();
+
+    let path = matches.get_one::<String>("source").unwrap();
+    let bucket = matches.get_one::<String>("dest_bucket").unwrap();
+    let prefix = matches.get_one::<String>("dest_prefix").unwrap();
+    let parallelization = matches
+        .get_one::<String>("parallelization")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(10);
+
+    benchmark_s3_upload(
+        Path::new(path).to_path_buf(),
+        bucket.to_owned(),
+        prefix.to_owned(),
+        parallelization,
+    )
+    .await;
+    println!("Done");
 }
 
 async fn benchmark_s3_upload(
