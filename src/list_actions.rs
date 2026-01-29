@@ -67,11 +67,13 @@ where
     ) -> impl Stream<Item = Result<(String, ByteStream, Option<i64>), Error>> {
         let ListObjects {
             s3,
-            config: _,
+            config,
             bucket,
             stream,
             prefix: _,
         } = self;
+        let download_parallelization = config.download_parallelization;
+        
         stream
             .try_filter_map(|response| ok(response.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
@@ -94,9 +96,8 @@ where
                     }
                 }
             })
-            .and_then(move |(key, _)| {
+            .map_ok(move |(key, _size)| {
                 let (s3, bucket) = (s3.clone(), bucket.clone());
-
                 async move {
                     let output = s3
                         .get_object()
@@ -110,7 +111,9 @@ where
                         })?;
                     Ok((key, output.body, output.content_length))
                 }
+                .boxed()
             })
+            .try_buffer_unordered(download_parallelization)
     }
 
     pub fn download_all_to_vec(self) -> impl Stream<Item = Result<(String, Vec<u8>), Error>> {
@@ -557,5 +560,70 @@ mod test {
             .unwrap();
 
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_s3_download_files() {
+        let algo = S3Algo::new(testing_sdk_client().await);
+        let dir = rand_string(14);
+        let dir2 = dir.clone();
+        
+        // Test with a reasonable number of files to verify concurrency
+        const N_FILES: usize = 50;
+        const FILE_DATA: &[u8] = b"test data content for download";
+        
+        // Upload test files
+        let files = (0..N_FILES).map(move |i| ObjectSource::Data {
+            data: FILE_DATA.to_vec(),
+            key: format!("{}/{}.file", dir2, i),
+        });
+        algo.upload_files(
+            "test-bucket".into(),
+            files,
+            |_result| async move {},
+            |client| client.put_object(),
+        )
+        .await
+        .unwrap();
+
+        // Download all files
+        let downloaded_files = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let downloaded_files2 = downloaded_files.clone();
+        
+        algo.list_prefix("test-bucket".into(), Some(dir.clone()))
+            .download_all_stream()
+            .try_for_each(|(key, body, size)| {
+                let downloaded_files = downloaded_files2.clone();
+                async move {
+                    let mut contents = vec![];
+                    tokio::io::copy(&mut body.into_async_read(), &mut contents)
+                        .await
+                        .unwrap();
+                    downloaded_files.lock().await.insert(key, (contents, size));
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+
+        let downloaded = downloaded_files.lock().await;
+        
+        // Verify all files were downloaded
+        assert_eq!(downloaded.len(), N_FILES);
+        
+        // Verify each file's content and size
+        for i in 0..N_FILES {
+            let key = format!("{}/{}.file", dir, i);
+            let (contents, size) = downloaded.get(&key)
+                .unwrap_or_else(|| panic!("File {} not found in downloaded files", key));
+            assert_eq!(contents.as_slice(), FILE_DATA);
+            assert_eq!(*size, Some(FILE_DATA.len() as i64));
+        }
+
+        // Cleanup: delete test files
+        algo.list_prefix("test-bucket".into(), Some(dir))
+            .delete_all(|_| async {}, |_| async {})
+            .await
+            .unwrap();
     }
 }

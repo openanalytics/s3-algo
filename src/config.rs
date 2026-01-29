@@ -6,6 +6,9 @@ pub struct Config {
     /// Maximum number of simultaneous upload requests
     pub copy_parallelization: usize,
 
+    /// Maximum number of simultaneous download requests
+    pub download_parallelization: usize,
+
     pub algorithm: AlgorithmConfig,
 
     /// The "unit" of a delete request is number of objects
@@ -22,6 +25,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             copy_parallelization: 20,
+            download_parallelization: 20,
             algorithm: Default::default(),
             delete_requests: SpecificTimings {
                 seconds_per_unit: 0.2,
