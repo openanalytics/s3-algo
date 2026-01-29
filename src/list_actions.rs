@@ -1,7 +1,7 @@
 use super::*;
 use aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Output;
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::types::{Delete, Object, ObjectIdentifier};
+use aws_sdk_s3::types::{Delete, Object, ObjectIdentifier, ObjectStorageClass};
 use aws_smithy_types_convert::stream::PaginationStreamExt;
 use futures::future::ok;
 use futures::stream::Stream;
@@ -60,6 +60,8 @@ where
     }
     /// Download all listed objects - returns a stream of the contents.
     /// Used as a basis for other `download_all_*` functions.
+    /// Note: This function filters out archived objects (GLACIER, DEEP_ARCHIVE) that cannot be
+    /// downloaded directly via GetObject and must first be restored via RestoreObject.
     pub fn download_all_stream(
         self,
     ) -> impl Stream<Item = Result<(String, ByteStream, Option<i64>), Error>> {
@@ -74,15 +76,23 @@ where
             .try_filter_map(|response| ok(response.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
             .try_flatten()
-            .map(|result| {
-                result.and_then(|obj| {
+            .try_filter_map(|obj| {
+                // Filter out archived objects that cannot be downloaded directly
+                let is_archived = matches!(
+                    obj.storage_class(),
+                    Some(ObjectStorageClass::Glacier) | Some(ObjectStorageClass::DeepArchive)
+                );
+                
+                if is_archived {
+                    ok(None)
+                } else {
                     let Object { key, size, .. } = obj;
                     if let Some(key) = key {
-                        Ok((key, size))
+                        ok(Some((key, size)))
                     } else {
-                        Err(Error::MissingKeyOrSize)
+                        ok(None)
                     }
-                })
+                }
             })
             .and_then(move |(key, _)| {
                 let (s3, bucket) = (s3.clone(), bucket.clone());
@@ -227,6 +237,30 @@ where
             .try_filter_map(|response| ok(response.contents))
             .map_ok(|x| stream::iter(x).map(Ok))
             .try_flatten()
+    }
+
+    /// Filter objects by key name before performing operations.
+    /// This is useful to exclude specific files (e.g., "archive.zip") before downloading.
+    pub fn filter_keys<F>(self, predicate: F) -> ListObjects<impl Stream<Item = Result<ListObjectsV2Output, Error>> + Sized + Send>
+    where
+        F: Fn(&str) -> bool + Clone + Send + 'static,
+    {
+        let filtered_stream = self.stream.map_ok(move |mut response| {
+            if let Some(contents) = response.contents.as_mut() {
+                contents.retain(|obj| {
+                    obj.key().map(|k| predicate(k)).unwrap_or(false)
+                });
+            }
+            response
+        });
+
+        ListObjects {
+            s3: self.s3,
+            config: self.config,
+            bucket: self.bucket,
+            prefix: self.prefix,
+            stream: filtered_stream,
+        }
     }
 
     /*
