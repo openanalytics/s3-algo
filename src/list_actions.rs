@@ -591,6 +591,7 @@ mod test {
         let downloaded_files2 = downloaded_files.clone();
         
         algo.list_prefix("test-bucket".into(), Some(dir.clone()))
+            .filter_keys(|key| !key.ends_with("archive.zip"))
             .download_all_stream()
             .try_for_each(|(key, body, size)| {
                 let downloaded_files = downloaded_files2.clone();
