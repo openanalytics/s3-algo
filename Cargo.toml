@@ -15,7 +15,7 @@ repository = "https://github.com/openanalytics/s3-algo"
 futures = "0.3.31"
 futures-stopwatch = "0.3.0"
 futures-retry = "0.6.0"
-tokio = {version = "1.49", features = ["time", "fs", "macros", "io-util", "sync", "rt-multi-thread"]}
+tokio = {version = "1.49", features = ["time", "fs", "macros", "io-util", "sync", "rt-multi-thread", "test-util"]}
 tokio-util = {version = "0.7.18", features = ["codec"]}
 bytes = "1.2.1"
 serde = {optional = true, version = "1.0.130", features = ["derive"]}

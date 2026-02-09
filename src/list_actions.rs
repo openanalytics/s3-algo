@@ -65,6 +65,18 @@ where
     pub fn download_all_stream(
         self,
     ) -> impl Stream<Item = Result<(String, ByteStream, Option<i64>), Error>> {
+        self.download_all_stream_internal(None::<fn() -> Pin<Box<dyn Future<Output = ()> + Send>>>)
+    }
+
+    /// Internal implementation with optional hook for testing
+    fn download_all_stream_internal<F, Fut>(
+        self,
+        pre_download_hook: Option<F>,
+    ) -> impl Stream<Item = Result<(String, ByteStream, Option<i64>), Error>>
+    where
+        F: Fn() -> Fut + Send + Clone + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
         let ListObjects {
             s3,
             config,
@@ -98,7 +110,13 @@ where
             })
             .map_ok(move |(key, _size)| {
                 let (s3, bucket) = (s3.clone(), bucket.clone());
+                let hook = pre_download_hook.clone();
                 async move {
+                    // Call hook before download (for testing)
+                    if let Some(ref h) = hook {
+                        h().await;
+                    }
+                    
                     let output = s3
                         .get_object()
                         .bucket(bucket.clone())
@@ -626,5 +644,141 @@ mod test {
             .delete_all(|_| async {}, |_| async {})
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_download_parallelism() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        
+        let algo = S3Algo::new(testing_sdk_client().await);
+        let dir = rand_string(14);
+        let dir2 = dir.clone();
+        
+        // Setup: 50 files, parallelism of 20, 100ms simulated delay each
+        // Expected: ceil(50/20) = 3 batches
+        // With real time: should take roughly 300ms + overhead
+        const N_FILES: usize = 50;
+        const PARALLELISM: usize = 20;
+        const DELAY_PER_FILE: Duration = Duration::from_millis(100);
+        const FILE_DATA: &[u8] = b"test data";
+        
+        // Upload test files (with real time)
+        let files = (0..N_FILES).map(move |i| ObjectSource::Data {
+            data: FILE_DATA.to_vec(),
+            key: format!("{}/{}.file", dir2, i),
+        });
+        algo.upload_files(
+            "test-bucket".into(),
+            files,
+            |_result| async move {},
+            |client| client.put_object(),
+        )
+        .await
+        .unwrap();
+
+        // Track concurrency
+        let current_concurrent = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let total_downloads = Arc::new(AtomicUsize::new(0));
+        let sum_concurrent = Arc::new(AtomicUsize::new(0));
+
+        let current_concurrent2 = current_concurrent.clone();
+        let max_concurrent2 = max_concurrent.clone();
+        let total_downloads2 = total_downloads.clone();
+        let sum_concurrent2 = sum_concurrent.clone();
+        
+        let start = tokio::time::Instant::now();
+        
+        // Download with instrumentation
+        let mut config = Config::default();
+        config.download_parallelization = PARALLELISM;
+        let algo_custom = S3Algo::with_config(testing_sdk_client().await, config);
+        
+        // Create hook that tracks concurrency and adds delay
+        let hook = move || {
+            let current = current_concurrent2.clone();
+            let max = max_concurrent2.clone();
+            let total = total_downloads2.clone();
+            let sum = sum_concurrent2.clone();
+            
+            async move {
+                // Increment current concurrent downloads
+                let concurrent = current.fetch_add(1, Ordering::SeqCst) + 1;
+                
+                // Update max concurrent if needed
+                max.fetch_max(concurrent, Ordering::SeqCst);
+                
+                // Track for mean calculation
+                total.fetch_add(1, Ordering::SeqCst);
+                sum.fetch_add(concurrent, Ordering::SeqCst);
+                
+                // Simulate network delay
+                tokio::time::sleep(DELAY_PER_FILE).await;
+                
+                // Decrement will happen after the download completes
+                current.fetch_sub(1, Ordering::SeqCst);
+            }
+        };
+        
+        algo_custom
+            .list_prefix("test-bucket".into(), Some(dir.clone()))
+            .download_all_stream_internal(Some(hook))
+            .try_for_each(|(_key, body, _size)| {
+                async move {
+                    // Read the body
+                    let mut contents = vec![];
+                    tokio::io::copy(&mut body.into_async_read(), &mut contents)
+                        .await
+                        .unwrap();
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+
+        let elapsed = start.elapsed();
+        
+        let max_concurrent_observed = max_concurrent.load(Ordering::SeqCst);
+        let total = total_downloads.load(Ordering::SeqCst);
+        let sum = sum_concurrent.load(Ordering::SeqCst);
+        let mean_concurrent = sum as f64 / total as f64;
+
+        // Cleanup
+        algo.list_prefix("test-bucket".into(), Some(dir))
+            .delete_all(|_| async {}, |_| async {})
+            .await
+            .unwrap();
+
+        // Assertions
+        println!("Elapsed: {:?}", elapsed);
+        println!("Max concurrent: {}", max_concurrent_observed);
+        println!("Mean concurrent: {:.2}", mean_concurrent);
+        println!("Total downloads: {}", total);
+        
+        // Verify we downloaded all files
+        assert_eq!(total, N_FILES, "Should download all {} files", N_FILES);
+        
+        // Verify parallelism
+        assert_eq!(max_concurrent_observed, PARALLELISM, 
+                   "Max concurrent downloads should equal parallelism setting of {}", PARALLELISM);
+        
+        // Mean concurrency should be reasonably high (at least 50% of max)
+        // Lower bound accounts for startup/rampup effects
+        assert!(mean_concurrent >= PARALLELISM as f64 * 0.5, 
+                "Mean concurrent ({:.2}) should be at least 50% of max parallelism ({})", 
+                mean_concurrent, PARALLELISM);
+        
+        // Time check: with 2-3 batches of DELAY_PER_FILE each, should be roughly that much
+        // Allow generous bounds due to S3 operation overhead
+        let min_expected = DELAY_PER_FILE * ((N_FILES / PARALLELISM) as u32);
+        let max_expected = min_expected * 10; // Allow 10x for S3 overhead + delays
+        
+        assert!(elapsed >= min_expected,
+                "Elapsed time ({:?}) should be at least {} batches * {:?} = {:?}",
+                elapsed, N_FILES / PARALLELISM, DELAY_PER_FILE, min_expected);
+        assert!(elapsed <= max_expected,
+                "Elapsed time ({:?}) should not exceed {:?} (10x theoretical minimum for test environment)",
+                elapsed, max_expected);
     }
 }
